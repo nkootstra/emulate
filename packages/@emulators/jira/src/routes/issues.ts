@@ -1,5 +1,15 @@
 import type { RouteContext } from "@emulators/core";
-import { JiraError, intParam, listParam, makeHandler, readJson, type JiraRequest } from "../context.js";
+import {
+  API_V,
+  JiraError,
+  listParam,
+  makeHandler,
+  pageParams,
+  READ,
+  readJson,
+  WRITE,
+  type JiraRequest,
+} from "../context.js";
 import {
   formatComponent,
   formatIssueType,
@@ -16,16 +26,12 @@ import {
   issueTransitions,
   parseFieldSelection,
 } from "../issue-format.js";
-import { createIssue, editIssue, transitionIssue, type EditIssueResult } from "../issue-service.js";
+import { createIssue, editIssue, transitionIssue } from "../issue-service.js";
 import { allFields, type FieldDef } from "../fields.js";
 import { findIssueType, findUser, paginate, requireIssue, requireProject } from "../lookup.js";
 import { deleteIssueRecord } from "../services.js";
-import { emitCommentEvent, emitIssueEvent } from "../webhooks.js";
+import { emitEditEvents, emitIssueEvent } from "../webhooks.js";
 import type { JiraProject } from "../entities.js";
-
-const V = "/rest/api/:v{[23]}";
-const READ = ["read:jira-work"];
-const WRITE = ["write:jira-work"];
 
 export function readIssueOptions(r: JiraRequest, defaultAll = true) {
   return {
@@ -39,16 +45,12 @@ export function issueRoutes({ app, store, baseUrl }: RouteContext): void {
 
   // Static paths first so they win over /issue/:key.
   app.get(
-    `${V}/issue/createmeta/:project/issuetypes`,
+    `${API_V}/issue/createmeta/:project/issuetypes`,
     handle(
       (r) => {
         const project = requireProject(r.js, r.c.req.param("project"));
         const types = projectIssueTypes(r, project).map((type) => formatIssueType(r, type));
-        const page = paginate(
-          types,
-          intParam(r.c.req.query("startAt"), 0),
-          intParam(r.c.req.query("maxResults"), 50, 200),
-        );
+        const page = paginate(types, pageParams(r.c, 50, 200));
         return r.c.json({
           issueTypes: page.values,
           maxResults: page.maxResults,
@@ -61,7 +63,7 @@ export function issueRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/issue/createmeta/:project/issuetypes/:typeId`,
+    `${API_V}/issue/createmeta/:project/issuetypes/:typeId`,
     handle(
       (r) => {
         const project = requireProject(r.js, r.c.req.param("project"));
@@ -72,11 +74,7 @@ export function issueRoutes({ app, store, baseUrl }: RouteContext): void {
           ]);
         }
         const fields = createFieldMeta(r, project, type.subtask);
-        const page = paginate(
-          fields,
-          intParam(r.c.req.query("startAt"), 0),
-          intParam(r.c.req.query("maxResults"), 50, 200),
-        );
+        const page = paginate(fields, pageParams(r.c, 50, 200));
         return r.c.json({ fields: page.values, maxResults: page.maxResults, startAt: page.startAt, total: page.total });
       },
       { scopes: WRITE },
@@ -84,7 +82,7 @@ export function issueRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.post(
-    `${V}/issue/bulk`,
+    `${API_V}/issue/bulk`,
     handle(
       async (r) => {
         const body = await readJson(r.c);
@@ -112,7 +110,7 @@ export function issueRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.post(
-    `${V}/issue`,
+    `${API_V}/issue`,
     handle(
       async (r) => {
         const { issue, comments } = createIssue(r, await readJson(r.c));
@@ -124,14 +122,14 @@ export function issueRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/issue/:key`,
+    `${API_V}/issue/:key`,
     handle((r) => r.c.json(formatIssue(r, requireIssue(r.js, r.c.req.param("key")), readIssueOptions(r))), {
       scopes: READ,
     }),
   );
 
   app.put(
-    `${V}/issue/:key`,
+    `${API_V}/issue/:key`,
     handle(
       async (r) => {
         const issue = requireIssue(r.js, r.c.req.param("key"));
@@ -147,7 +145,7 @@ export function issueRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.delete(
-    `${V}/issue/:key`,
+    `${API_V}/issue/:key`,
     handle(
       async (r) => {
         const issue = requireIssue(r.js, r.c.req.param("key"));
@@ -168,7 +166,7 @@ export function issueRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.put(
-    `${V}/issue/:key/assignee`,
+    `${API_V}/issue/:key/assignee`,
     handle(
       async (r) => {
         const issue = requireIssue(r.js, r.c.req.param("key"));
@@ -186,7 +184,7 @@ export function issueRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/issue/:key/transitions`,
+    `${API_V}/issue/:key/transitions`,
     handle(
       (r) => {
         const issue = requireIssue(r.js, r.c.req.param("key"));
@@ -201,7 +199,7 @@ export function issueRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.post(
-    `${V}/issue/:key/transitions`,
+    `${API_V}/issue/:key/transitions`,
     handle(
       async (r) => {
         const issue = requireIssue(r.js, r.c.req.param("key"));
@@ -214,14 +212,13 @@ export function issueRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/issue/:key/changelog`,
+    `${API_V}/issue/:key/changelog`,
     handle(
       (r) => {
         const issue = requireIssue(r.js, r.c.req.param("key"));
         const entries = r.js.changelogs.findBy("issue_id", issue.id).sort((a, b) => a.id - b.id);
-        const startAt = intParam(r.c.req.query("startAt"), 0);
-        const maxResults = intParam(r.c.req.query("maxResults"), 100, 100);
-        const page = paginate(entries, startAt, maxResults);
+        const { startAt, maxResults } = pageParams(r.c, 100, 100);
+        const page = paginate(entries, { startAt, maxResults });
         return r.c.json({
           self: restUrl(r, `/issue/${issue.key}/changelog?maxResults=${maxResults}&startAt=${startAt}`),
           ...page,
@@ -233,7 +230,7 @@ export function issueRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/issue/:key/editmeta`,
+    `${API_V}/issue/:key/editmeta`,
     handle(
       (r) => {
         const issue = requireIssue(r.js, r.c.req.param("key"));
@@ -245,18 +242,6 @@ export function issueRoutes({ app, store, baseUrl }: RouteContext): void {
       { scopes: READ },
     ),
   );
-}
-
-export async function emitEditEvents(r: JiraRequest, result: EditIssueResult): Promise<void> {
-  if (result.changelog) {
-    await emitIssueEvent(r, "jira:issue_updated", result.issue, { changelog: result.changelog });
-  }
-  for (const comment of result.comments) {
-    await emitCommentEvent(r, "comment_created", result.issue, comment);
-  }
-  if (result.comments.length > 0) {
-    await emitIssueEvent(r, "jira:issue_updated", result.issue, { comments: result.comments });
-  }
 }
 
 const OPERATIONS: Record<string, string[]> = {

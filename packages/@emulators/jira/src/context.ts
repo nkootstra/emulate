@@ -4,6 +4,13 @@ import type { JiraUser } from "./entities.js";
 
 export const GATEWAY_HEADER = "x-emulate-jira-cloud-id";
 
+/** Route prefix for the platform REST API, matching both v2 and v3. */
+export const API_V = "/rest/api/:v{[23]}";
+
+export const READ = ["read:jira-work"];
+export const WRITE = ["write:jira-work"];
+export const MANAGE = ["manage:jira-project", "manage:jira-configuration"];
+
 export class JiraError extends Error {
   constructor(
     public status: number,
@@ -145,6 +152,19 @@ export function intParam(value: string | undefined, fallback: number, max = Numb
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || parsed < 0) return fallback;
   return Math.min(parsed, max);
+}
+
+export interface PageParams {
+  startAt: number;
+  maxResults: number;
+}
+
+/** Reads `startAt` and `maxResults` query params. `maxResults` defaults to `defaultMax` and is capped at `cap`. */
+export function pageParams(c: Context<AppEnv>, defaultMax: number, cap?: number): PageParams {
+  return {
+    startAt: intParam(c.req.query("startAt"), 0),
+    maxResults: intParam(c.req.query("maxResults"), defaultMax, cap),
+  };
 }
 
 /** Splits `a,b` query values and repeated `?x=a&x=b` params into one list. */

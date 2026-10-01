@@ -1,17 +1,16 @@
 import type { RouteContext } from "@emulators/core";
-import { JiraError, intParam, listParam, makeHandler, readJson, type JiraRequest } from "../context.js";
+import { JiraError, listParam, makeHandler, pageParams, READ, readJson, WRITE, type JiraRequest } from "../context.js";
 import { avatarUrls, formatStatus, projectStatuses } from "../formatters.js";
 import { formatIssue, formatSprint, parseFieldSelection } from "../issue-format.js";
 import { editIssue } from "../issue-service.js";
 import { JqlError, searchIssues } from "../jql.js";
 import { findIssue, findProject, paginate, requireIssue } from "../lookup.js";
-import { emitEditEvents } from "./issues.js";
+import { emitEditEvents } from "../webhooks.js";
+import { deleteBoardRecord, deleteSprintRecord } from "../services.js";
 import type { JiraBoard, JiraIssue, JiraSprint, JiraSprintState } from "../entities.js";
 
 const A = "/rest/agile/1.0";
 const PREFIXES = [A, "/rest/software/1.0"];
-const READ = ["read:jira-work"];
-const WRITE = ["write:jira-work"];
 
 export function agileRoutes({ app, store, baseUrl }: RouteContext): void {
   const handle = makeHandler(store, baseUrl);
@@ -71,8 +70,7 @@ export function agileRoutes({ app, store, baseUrl }: RouteContext): void {
       }
     }
     issues = [...issues].sort((a, b) => a.id - b.id);
-    const startAt = intParam(r.c.req.query("startAt"), 0);
-    const maxResults = intParam(r.c.req.query("maxResults"), 50, 100);
+    const { startAt, maxResults } = pageParams(r.c, 50, 100);
     const options = { fields: parseFieldSelection(listParam(r.c, "fields"), true), expand: listParam(r.c, "expand") };
     return {
       expand: "schema,names",
@@ -122,11 +120,7 @@ export function agileRoutes({ app, store, baseUrl }: RouteContext): void {
                 (!type || type.split(",").includes(board.type)) &&
                 (!name || board.name.toLowerCase().includes(name)),
             );
-          const page = paginate(
-            boards,
-            intParam(r.c.req.query("startAt"), 0),
-            intParam(r.c.req.query("maxResults"), 50),
-          );
+          const page = paginate(boards, pageParams(r.c, 50));
           return r.c.json({ ...page, values: page.values.map((board) => formatBoard(r, board)) });
         },
         { scopes: READ },
@@ -163,9 +157,7 @@ export function agileRoutes({ app, store, baseUrl }: RouteContext): void {
       `${P}/board/:boardId`,
       handle(
         (r) => {
-          const board = requireBoard(r);
-          for (const sprint of r.js.sprints.findBy("board_id", board.id)) deleteSprint(r, sprint);
-          r.js.boards.delete(board.id);
+          deleteBoardRecord(r.js, requireBoard(r));
           return r.c.body(null, 204);
         },
         { scopes: WRITE },
@@ -231,11 +223,7 @@ export function agileRoutes({ app, store, baseUrl }: RouteContext): void {
             .findBy("board_id", board.id)
             .filter((sprint) => states.length === 0 || states.includes(sprint.state))
             .sort((a, b) => a.id - b.id);
-          const page = paginate(
-            sprints,
-            intParam(r.c.req.query("startAt"), 0),
-            intParam(r.c.req.query("maxResults"), 50),
-          );
+          const page = paginate(sprints, pageParams(r.c, 50));
           return r.c.json({ ...page, values: page.values.map((sprint) => formatSprint(r, sprint)) });
         },
         { scopes: READ },
@@ -251,11 +239,7 @@ export function agileRoutes({ app, store, baseUrl }: RouteContext): void {
             .findBy("project_id", board.project_id)
             .filter((issue) => r.js.issueTypes.get(issue.issue_type_id)?.hierarchy_level === 1)
             .sort((a, b) => a.id - b.id);
-          const page = paginate(
-            epics,
-            intParam(r.c.req.query("startAt"), 0),
-            intParam(r.c.req.query("maxResults"), 50),
-          );
+          const page = paginate(epics, pageParams(r.c, 50));
           return r.c.json({
             ...page,
             values: page.values.map((epic) => ({
@@ -354,7 +338,7 @@ export function agileRoutes({ app, store, baseUrl }: RouteContext): void {
         (r) => {
           const sprint = requireSprint(r);
           if (sprint.state === "closed") throw new JiraError(400, ["Closed sprints cannot be deleted."]);
-          deleteSprint(r, sprint);
+          deleteSprintRecord(r.js, sprint);
           return r.c.body(null, 204);
         },
         { scopes: WRITE },
@@ -440,16 +424,4 @@ async function closeSprintIssues(r: JiraRequest, sprint: JiraSprint): Promise<vo
       });
     }
   }
-}
-
-function deleteSprint(r: JiraRequest, sprint: JiraSprint): void {
-  for (const issue of r.js.issues.all()) {
-    if (issue.sprint_id === sprint.id || issue.closed_sprint_ids.includes(sprint.id)) {
-      r.js.issues.update(issue.id, {
-        sprint_id: issue.sprint_id === sprint.id ? null : issue.sprint_id,
-        closed_sprint_ids: issue.closed_sprint_ids.filter((id) => id !== sprint.id),
-      });
-    }
-  }
-  r.js.sprints.delete(sprint.id);
 }

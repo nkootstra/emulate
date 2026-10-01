@@ -13,6 +13,7 @@ import {
   findVersion,
 } from "./lookup.js";
 import { insertFrom, type JiraStore } from "./store.js";
+import { touchIssue } from "./services.js";
 import { issueTransitions } from "./issue-format.js";
 import type { Fmt } from "./formatters.js";
 
@@ -308,8 +309,8 @@ export function createLink(js: JiraStore, typeId: number, inwardId: number, outw
     inward_issue_id: inwardId,
     outward_issue_id: outwardId,
   });
-  js.issues.update(inwardId, {});
-  js.issues.update(outwardId, {});
+  touchIssue(js, inwardId);
+  touchIssue(js, outwardId);
   return link;
 }
 
@@ -430,7 +431,7 @@ export function addComment(actor: Actor, issue: JiraIssue, body: AdfNode): JiraC
     update_author_id: actor.user.account_id,
     body,
   });
-  actor.js.issues.update(issue.id, {});
+  touchIssue(actor.js, issue.id);
   return comment;
 }
 

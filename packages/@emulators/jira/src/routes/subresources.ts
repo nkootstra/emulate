@@ -1,16 +1,23 @@
 import type { RouteContext } from "@emulators/core";
-import { JiraError, fieldError, intParam, makeHandler, readJson, type JiraRequest } from "../context.js";
+import {
+  API_V,
+  fieldError,
+  JiraError,
+  makeHandler,
+  pageParams,
+  READ,
+  readJson,
+  WRITE,
+  type JiraRequest,
+} from "../context.js";
 import { formatUser, restUrl } from "../formatters.js";
 import { formatComment, formatIssueRef, formatWorklog } from "../issue-format.js";
 import { addComment, createLink, findLinkType, readBody } from "../issue-service.js";
 import { findIssue, findUser, requireIssue } from "../lookup.js";
 import { insertFrom } from "../store.js";
+import { touchIssue } from "../services.js";
 import { emitCommentEvent, emitIssueEvent } from "../webhooks.js";
 import type { JiraComment, JiraIssue, JiraWorklog } from "../entities.js";
-
-const V = "/rest/api/:v{[23]}";
-const READ = ["read:jira-work"];
-const WRITE = ["write:jira-work"];
 
 const DURATION_UNITS: Record<string, number> = { w: 5 * 8 * 3600, d: 8 * 3600, h: 3600, m: 60 };
 
@@ -61,7 +68,7 @@ export function subresourceRoutes({ app, store, baseUrl }: RouteContext): void {
   // Comments
 
   app.post(
-    `${V}/comment/list`,
+    `${API_V}/comment/list`,
     handle(
       async (r) => {
         const body = await readJson(r.c);
@@ -82,7 +89,7 @@ export function subresourceRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/issue/:key/comment`,
+    `${API_V}/issue/:key/comment`,
     handle(
       (r) => {
         const issue = requireIssue(r.js, r.c.req.param("key"));
@@ -91,8 +98,7 @@ export function subresourceRoutes({ app, store, baseUrl }: RouteContext): void {
         const comments = r.js.comments
           .findBy("issue_id", issue.id)
           .sort((a, b) => (descending ? b.id - a.id : a.id - b.id));
-        const startAt = intParam(r.c.req.query("startAt"), 0);
-        const maxResults = intParam(r.c.req.query("maxResults"), 5000, 5000);
+        const { startAt, maxResults } = pageParams(r.c, 5000, 5000);
         return r.c.json({
           self: restUrl(r, `/issue/${issue.id}/comment`),
           startAt,
@@ -106,7 +112,7 @@ export function subresourceRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.post(
-    `${V}/issue/:key/comment`,
+    `${API_V}/issue/:key/comment`,
     handle(
       async (r) => {
         const issue = requireIssue(r.js, r.c.req.param("key"));
@@ -122,7 +128,7 @@ export function subresourceRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/issue/:key/comment/:id`,
+    `${API_V}/issue/:key/comment/:id`,
     handle(
       (r) => {
         const issue = requireIssue(r.js, r.c.req.param("key"));
@@ -133,7 +139,7 @@ export function subresourceRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.put(
-    `${V}/issue/:key/comment/:id`,
+    `${API_V}/issue/:key/comment/:id`,
     handle(
       async (r) => {
         const issue = requireIssue(r.js, r.c.req.param("key"));
@@ -152,13 +158,14 @@ export function subresourceRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.delete(
-    `${V}/issue/:key/comment/:id`,
+    `${API_V}/issue/:key/comment/:id`,
     handle(
       async (r) => {
         const issue = requireIssue(r.js, r.c.req.param("key"));
         const comment = requireComment(r, issue);
         requireCommentAuthor(r, comment);
         r.js.comments.delete(comment.id);
+        touchIssue(r.js, issue.id);
         await emitCommentEvent(r, "comment_deleted", issue, comment);
         return r.c.body(null, 204);
       },
@@ -169,7 +176,7 @@ export function subresourceRoutes({ app, store, baseUrl }: RouteContext): void {
   // Watchers
 
   app.get(
-    `${V}/issue/:key/watchers`,
+    `${API_V}/issue/:key/watchers`,
     handle(
       (r) => {
         const issue = requireIssue(r.js, r.c.req.param("key"));
@@ -187,7 +194,7 @@ export function subresourceRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.post(
-    `${V}/issue/:key/watchers`,
+    `${API_V}/issue/:key/watchers`,
     handle(
       async (r) => {
         const issue = requireIssue(r.js, r.c.req.param("key"));
@@ -205,7 +212,7 @@ export function subresourceRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.delete(
-    `${V}/issue/:key/watchers`,
+    `${API_V}/issue/:key/watchers`,
     handle(
       (r) => {
         const issue = requireIssue(r.js, r.c.req.param("key"));
@@ -231,13 +238,12 @@ export function subresourceRoutes({ app, store, baseUrl }: RouteContext): void {
   };
 
   app.get(
-    `${V}/issue/:key/worklog`,
+    `${API_V}/issue/:key/worklog`,
     handle(
       (r) => {
         const issue = requireIssue(r.js, r.c.req.param("key"));
         const worklogs = r.js.worklogs.findBy("issue_id", issue.id).sort((a, b) => a.id - b.id);
-        const startAt = intParam(r.c.req.query("startAt"), 0);
-        const maxResults = intParam(r.c.req.query("maxResults"), 5000, 5000);
+        const { startAt, maxResults } = pageParams(r.c, 5000, 5000);
         return r.c.json({
           startAt,
           maxResults,
@@ -250,7 +256,7 @@ export function subresourceRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.post(
-    `${V}/issue/:key/worklog`,
+    `${API_V}/issue/:key/worklog`,
     handle(
       async (r) => {
         const issue = requireIssue(r.js, r.c.req.param("key"));
@@ -265,7 +271,7 @@ export function subresourceRoutes({ app, store, baseUrl }: RouteContext): void {
           started: parseStarted(body.started),
           time_spent_seconds: seconds,
         });
-        r.js.issues.update(issue.id, {});
+        touchIssue(r.js, issue.id);
         return r.c.json(formatWorklog(r, worklog), 201);
       },
       { scopes: WRITE },
@@ -273,14 +279,14 @@ export function subresourceRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/issue/:key/worklog/:id`,
+    `${API_V}/issue/:key/worklog/:id`,
     handle((r) => r.c.json(formatWorklog(r, requireWorklog(r, requireIssue(r.js, r.c.req.param("key"))))), {
       scopes: READ,
     }),
   );
 
   app.put(
-    `${V}/issue/:key/worklog/:id`,
+    `${API_V}/issue/:key/worklog/:id`,
     handle(
       async (r) => {
         const worklog = requireWorklog(r, requireIssue(r.js, r.c.req.param("key")));
@@ -292,6 +298,7 @@ export function subresourceRoutes({ app, store, baseUrl }: RouteContext): void {
           ...(body.started !== undefined ? { started: parseStarted(body.started) } : {}),
           update_author_id: r.user.account_id,
         })!;
+        touchIssue(r.js, worklog.issue_id);
         return r.c.json(formatWorklog(r, updated));
       },
       { scopes: WRITE },
@@ -299,11 +306,12 @@ export function subresourceRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.delete(
-    `${V}/issue/:key/worklog/:id`,
+    `${API_V}/issue/:key/worklog/:id`,
     handle(
       (r) => {
         const worklog = requireWorklog(r, requireIssue(r.js, r.c.req.param("key")));
         r.js.worklogs.delete(worklog.id);
+        touchIssue(r.js, worklog.issue_id);
         return r.c.body(null, 204);
       },
       { scopes: WRITE },
@@ -313,7 +321,7 @@ export function subresourceRoutes({ app, store, baseUrl }: RouteContext): void {
   // Issue links
 
   app.post(
-    `${V}/issueLink`,
+    `${API_V}/issueLink`,
     handle(
       async (r) => {
         const body = await readJson(r.c);
@@ -342,7 +350,7 @@ export function subresourceRoutes({ app, store, baseUrl }: RouteContext): void {
   };
 
   app.get(
-    `${V}/issueLink/:id`,
+    `${API_V}/issueLink/:id`,
     handle(
       (r) => {
         const link = requireLink(r);
@@ -366,7 +374,7 @@ export function subresourceRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.delete(
-    `${V}/issueLink/:id`,
+    `${API_V}/issueLink/:id`,
     handle(
       (r) => {
         const link = requireLink(r);

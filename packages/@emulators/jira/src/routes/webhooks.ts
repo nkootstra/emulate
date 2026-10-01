@@ -1,5 +1,5 @@
 import type { RouteContext } from "@emulators/core";
-import { JiraError, intParam, makeHandler, readJson, type JiraRequest } from "../context.js";
+import { API_V, JiraError, makeHandler, pageParams, readJson, type JiraRequest } from "../context.js";
 import { jiraTime } from "../ids.js";
 import { JqlError, parseJql, searchIssues } from "../jql.js";
 import { paginate } from "../lookup.js";
@@ -8,7 +8,6 @@ import { WEBHOOK_EVENTS } from "../webhooks.js";
 import type { JiraWebhook } from "../entities.js";
 
 const W = "/rest/webhooks/1.0/webhook";
-const V = "/rest/api/:v{[23]}";
 const DYNAMIC_TTL_MS = 30 * 24 * 3600 * 1000;
 const FILTER_KEY = "issue-related-events-section";
 
@@ -145,7 +144,7 @@ export function webhookRoutes({ app, store, baseUrl }: RouteContext): void {
   const expiry = () => new Date(Date.now() + DYNAMIC_TTL_MS).toISOString();
 
   app.post(
-    `${V}/webhook`,
+    `${API_V}/webhook`,
     handle(
       async (r) => {
         const clientId = requireApp(r);
@@ -185,15 +184,11 @@ export function webhookRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/webhook`,
+    `${API_V}/webhook`,
     handle(
       (r) => {
         const webhooks = appWebhooks(r, requireApp(r));
-        const page = paginate(
-          webhooks,
-          intParam(r.c.req.query("startAt"), 0),
-          intParam(r.c.req.query("maxResults"), 100),
-        );
+        const page = paginate(webhooks, pageParams(r.c, 100));
         return r.c.json({
           ...page,
           values: page.values.map((webhook) => ({
@@ -209,7 +204,7 @@ export function webhookRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.delete(
-    `${V}/webhook`,
+    `${API_V}/webhook`,
     handle(
       async (r) => {
         const clientId = requireApp(r);
@@ -224,7 +219,7 @@ export function webhookRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.put(
-    `${V}/webhook/refresh`,
+    `${API_V}/webhook/refresh`,
     handle(
       async (r) => {
         const clientId = requireApp(r);

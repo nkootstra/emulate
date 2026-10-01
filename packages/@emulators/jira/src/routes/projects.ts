@@ -1,14 +1,21 @@
 import type { RouteContext } from "@emulators/core";
-import { JiraError, fieldError, intParam, listParam, makeHandler, readJson, type JiraRequest } from "../context.js";
+import {
+  API_V,
+  fieldError,
+  JiraError,
+  listParam,
+  makeHandler,
+  MANAGE,
+  pageParams,
+  READ,
+  readJson,
+  type JiraRequest,
+} from "../context.js";
 import { formatComponent, formatProject, formatVersion, restUrl } from "../formatters.js";
 import { findProject, findUser, paginate, requireProject } from "../lookup.js";
 import { insertFrom } from "../store.js";
-import { deleteProjectRecord } from "../services.js";
-import { ensureProject } from "../seed.js";
+import { createProject, deleteComponentRecord, deleteProjectRecord, deleteVersionRecord } from "../services.js";
 
-const V = "/rest/api/:v{[23]}";
-const READ = ["read:jira-work"];
-const MANAGE = ["manage:jira-project", "manage:jira-configuration"];
 const PROJECT_KEY = /^[A-Z][A-Z0-9_]{1,9}$/;
 
 function requireAdmin(r: JiraRequest) {
@@ -21,12 +28,12 @@ export function projectRoutes({ app, store, baseUrl }: RouteContext): void {
   const handle = makeHandler(store, baseUrl);
 
   app.get(
-    `${V}/project`,
+    `${API_V}/project`,
     handle((r) => r.c.json(r.js.projects.all().map((project) => formatProject(r, project))), { scopes: READ }),
   );
 
   app.get(
-    `${V}/project/search`,
+    `${API_V}/project/search`,
     handle(
       (r) => {
         const query = r.c.req.query("query")?.toLowerCase();
@@ -42,9 +49,8 @@ export function projectRoutes({ app, store, baseUrl }: RouteContext): void {
           if (typeKey && project.project_type_key !== typeKey) return false;
           return true;
         });
-        const startAt = intParam(r.c.req.query("startAt"), 0);
-        const maxResults = intParam(r.c.req.query("maxResults"), 50, 100);
-        const page = paginate(projects, startAt, maxResults);
+        const { startAt, maxResults } = pageParams(r.c, 50, 100);
+        const page = paginate(projects, { startAt, maxResults });
         return r.c.json({
           self: restUrl(r, `/project/search?startAt=${startAt}&maxResults=${maxResults}`),
           ...(page.isLast
@@ -59,7 +65,7 @@ export function projectRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.post(
-    `${V}/project`,
+    `${API_V}/project`,
     handle(
       async (r) => {
         requireAdmin(r);
@@ -91,7 +97,7 @@ export function projectRoutes({ app, store, baseUrl }: RouteContext): void {
           if (!user) throw fieldError("projectLead", "The project lead you specified does not exist.");
           lead = user.account_id;
         }
-        const project = ensureProject(store, {
+        const project = createProject(r.js, {
           key,
           name,
           description: body.description ?? "",
@@ -105,12 +111,12 @@ export function projectRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/project/:key`,
+    `${API_V}/project/:key`,
     handle((r) => r.c.json(formatProject(r, requireProject(r.js, r.c.req.param("key")))), { scopes: READ }),
   );
 
   app.put(
-    `${V}/project/:key`,
+    `${API_V}/project/:key`,
     handle(
       async (r) => {
         requireAdmin(r);
@@ -143,7 +149,7 @@ export function projectRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.delete(
-    `${V}/project/:key`,
+    `${API_V}/project/:key`,
     handle(
       (r) => {
         requireAdmin(r);
@@ -155,7 +161,7 @@ export function projectRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/project/:key/components`,
+    `${API_V}/project/:key/components`,
     handle(
       (r) => {
         const project = requireProject(r.js, r.c.req.param("key"));
@@ -168,7 +174,7 @@ export function projectRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/project/:key/versions`,
+    `${API_V}/project/:key/versions`,
     handle(
       (r) => {
         const project = requireProject(r.js, r.c.req.param("key"));
@@ -179,7 +185,7 @@ export function projectRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.post(
-    `${V}/component`,
+    `${API_V}/component`,
     handle(
       async (r) => {
         const body = await readJson(r.c);
@@ -210,12 +216,12 @@ export function projectRoutes({ app, store, baseUrl }: RouteContext): void {
   };
 
   app.get(
-    `${V}/component/:id`,
+    `${API_V}/component/:id`,
     handle((r) => r.c.json(formatComponent(r, requireComponent(r))), { scopes: READ }),
   );
 
   app.put(
-    `${V}/component/:id`,
+    `${API_V}/component/:id`,
     handle(
       async (r) => {
         const component = requireComponent(r);
@@ -231,16 +237,10 @@ export function projectRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.delete(
-    `${V}/component/:id`,
+    `${API_V}/component/:id`,
     handle(
       (r) => {
-        const component = requireComponent(r);
-        for (const issue of r.js.issues.findBy("project_id", component.project_id)) {
-          if (issue.component_ids.includes(component.id)) {
-            r.js.issues.update(issue.id, { component_ids: issue.component_ids.filter((id) => id !== component.id) });
-          }
-        }
-        r.js.components.delete(component.id);
+        deleteComponentRecord(r.js, requireComponent(r));
         return r.c.body(null, 204);
       },
       { scopes: MANAGE },
@@ -248,7 +248,7 @@ export function projectRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.post(
-    `${V}/version`,
+    `${API_V}/version`,
     handle(
       async (r) => {
         const body = await readJson(r.c);
@@ -281,12 +281,12 @@ export function projectRoutes({ app, store, baseUrl }: RouteContext): void {
   };
 
   app.get(
-    `${V}/version/:id`,
+    `${API_V}/version/:id`,
     handle((r) => r.c.json(formatVersion(r, requireVersion(r))), { scopes: READ }),
   );
 
   app.put(
-    `${V}/version/:id`,
+    `${API_V}/version/:id`,
     handle(
       async (r) => {
         const version = requireVersion(r);
@@ -306,16 +306,10 @@ export function projectRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.delete(
-    `${V}/version/:id`,
+    `${API_V}/version/:id`,
     handle(
       (r) => {
-        const version = requireVersion(r);
-        for (const issue of r.js.issues.findBy("project_id", version.project_id)) {
-          if (issue.fix_version_ids.includes(version.id)) {
-            r.js.issues.update(issue.id, { fix_version_ids: issue.fix_version_ids.filter((id) => id !== version.id) });
-          }
-        }
-        r.js.versions.delete(version.id);
+        deleteVersionRecord(r.js, requireVersion(r));
         return r.c.body(null, 204);
       },
       { scopes: MANAGE },

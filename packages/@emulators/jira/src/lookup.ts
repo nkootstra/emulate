@@ -1,5 +1,5 @@
 import type { JiraStore } from "./store.js";
-import { JiraError, issueNotFound } from "./context.js";
+import { JiraError, issueNotFound, type PageParams } from "./context.js";
 
 const eqi = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const asId = (ref: string | number) => (/^\d+$/.test(String(ref)) ? Number(ref) : undefined);
@@ -80,7 +80,7 @@ export function findVersion(js: JiraStore, projectId: number, ref: { id?: string
   return undefined;
 }
 
-export function paginate<T>(items: T[], startAt: number, maxResults: number) {
+export function paginate<T>(items: T[], { startAt, maxResults }: PageParams) {
   const values = items.slice(startAt, startAt + maxResults);
   return {
     startAt,

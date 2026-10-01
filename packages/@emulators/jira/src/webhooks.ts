@@ -1,6 +1,6 @@
 import { createHmac, randomUUID } from "node:crypto";
 import type { JiraChangelog, JiraComment, JiraIssue, JiraWebhook } from "./entities.js";
-import type { Actor } from "./issue-service.js";
+import type { Actor, EditIssueResult } from "./issue-service.js";
 import { formatUser, type Fmt } from "./formatters.js";
 import { formatComment, formatIssue, formatIssueRef } from "./issue-format.js";
 import { JqlError, searchIssues } from "./jql.js";
@@ -102,6 +102,19 @@ export async function emitCommentEvent(
       },
     },
   });
+}
+
+/** Sends the issue and comment events for the result of an edit or transition. */
+export async function emitEditEvents(actor: Actor, result: EditIssueResult): Promise<void> {
+  if (result.changelog) {
+    await emitIssueEvent(actor, "jira:issue_updated", result.issue, { changelog: result.changelog });
+  }
+  for (const comment of result.comments) {
+    await emitCommentEvent(actor, "comment_created", result.issue, comment);
+  }
+  if (result.comments.length > 0) {
+    await emitIssueEvent(actor, "jira:issue_updated", result.issue, { comments: result.comments });
+  }
 }
 
 /** Admin webhooks each get their own request. Dynamic webhooks are grouped per app URL with matchedWebhookIds. */

@@ -5,6 +5,7 @@ import type { JiraBoardType, JiraCustomFieldType, JiraStatusCategory, JiraUser }
 import { addComment, createIssue, createLink, systemActor } from "./issue-service.js";
 import { findComponent, findIssue, findIssueType, findProject, findStatus, findUser, findVersion } from "./lookup.js";
 import { WEBHOOK_EVENTS } from "./webhooks.js";
+import { createProject, type CreateProjectInput } from "./services.js";
 import { textToAdf } from "./adf.js";
 
 export const DEFAULT_CLOUD_ID = "11111111-2222-4333-8444-555555555555";
@@ -188,50 +189,9 @@ export function ensureStatus(store: Store, name: string, category: JiraStatusCat
   return insertFrom(js.statuses, 10000, { name, category, description });
 }
 
-export function ensureProject(
-  store: Store,
-  input: {
-    key: string;
-    name: string;
-    description?: string;
-    lead?: string | null;
-    project_type_key?: "software" | "business" | "service_desk";
-    statuses?: string[];
-    issue_types?: string[];
-    /** Software projects get a scrum board unless this is false. */
-    board?: boolean | { name?: string; type?: JiraBoardType };
-  },
-) {
+export function ensureProject(store: Store, input: CreateProjectInput) {
   const js = getJiraStore(store);
-  const existing = js.projects.findOneBy("key", input.key);
-  if (existing) return existing;
-  const statusNames = input.statuses ?? ["To Do", "In Progress", "Done"];
-  const statusIds = statusNames
-    .map((name) => js.statuses.all().find((status) => status.name.toLowerCase() === name.toLowerCase())?.id)
-    .filter((id): id is number => id !== undefined);
-  const typeNames = input.issue_types ?? js.issueTypes.all().map((type) => type.name);
-  const typeIds = typeNames
-    .map((name) => js.issueTypes.all().find((type) => type.name.toLowerCase() === name.toLowerCase())?.id)
-    .filter((id): id is number => id !== undefined);
-  const project = insertFrom(js.projects, 10000, {
-    key: input.key,
-    name: input.name,
-    description: input.description ?? "",
-    lead_account_id: input.lead ?? null,
-    project_type_key: input.project_type_key ?? "software",
-    issue_sequence: 0,
-    status_ids: statusIds,
-    issue_type_ids: typeIds,
-  });
-  if (input.board !== false && project.project_type_key === "software") {
-    const board = typeof input.board === "object" ? input.board : {};
-    js.boards.insert({
-      name: board.name ?? `${project.key} board`,
-      type: board.type ?? "scrum",
-      project_id: project.id,
-    });
-  }
-  return project;
+  return js.projects.findOneBy("key", input.key) ?? createProject(js, input);
 }
 
 export interface JiraSeedConfig {

@@ -1,11 +1,8 @@
 import type { RouteContext } from "@emulators/core";
-import { JiraError, intParam, listParam, makeHandler, readJson, type JiraRequest } from "../context.js";
+import { API_V, intParam, JiraError, listParam, makeHandler, READ, readJson, type JiraRequest } from "../context.js";
 import { formatIssue, parseFieldSelection } from "../issue-format.js";
 import { JqlError, parseJql, runQuery } from "../jql.js";
 import type { JiraIssue } from "../entities.js";
-
-const V = "/rest/api/:v{[23]}";
-const READ = ["read:jira-work"];
 
 interface SearchParams {
   jql: string;
@@ -112,11 +109,11 @@ export function searchRoutes({ app, store, baseUrl }: RouteContext): void {
     },
     { scopes: READ },
   );
-  app.get(`${V}/search/jql`, enhanced);
-  app.post(`${V}/search/jql`, enhanced);
+  app.get(`${API_V}/search/jql`, enhanced);
+  app.post(`${API_V}/search/jql`, enhanced);
 
   app.post(
-    `${V}/search/approximate-count`,
+    `${API_V}/search/approximate-count`,
     handle(
       async (r) => {
         const body = await readJson(r.c);
@@ -148,11 +145,11 @@ export function searchRoutes({ app, store, baseUrl }: RouteContext): void {
     },
     { scopes: READ },
   );
-  app.get(`${V}/search`, legacy);
-  app.post(`${V}/search`, legacy);
+  app.get(`${API_V}/search`, legacy);
+  app.post(`${API_V}/search`, legacy);
 
   app.get(
-    `${V}/issue/picker`,
+    `${API_V}/issue/picker`,
     handle(
       (r) => {
         const query = (r.c.req.query("query") ?? "").toLowerCase();

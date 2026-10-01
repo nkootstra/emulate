@@ -1,5 +1,5 @@
 import type { RouteContext } from "@emulators/core";
-import { JiraError, intParam, listParam, makeHandler } from "../context.js";
+import { API_V, JiraError, listParam, makeHandler, pageParams } from "../context.js";
 import {
   allStatusCategories,
   formatIssueType,
@@ -14,7 +14,6 @@ import { allFields } from "../fields.js";
 import { findIssueType, findPriority, findProject, findResolution, findStatus, paginate } from "../lookup.js";
 import type { JiraUser } from "../entities.js";
 
-const V = "/rest/api/:v{[23]}";
 const READ_USER = ["read:jira-user", "read:jira-work"];
 const READ_WORK = ["read:jira-work"];
 
@@ -46,7 +45,7 @@ export function platformRoutes({ app, store, baseUrl }: RouteContext): void {
   const handle = makeHandler(store, baseUrl);
 
   app.get(
-    `${V}/serverInfo`,
+    `${API_V}/serverInfo`,
     handle(
       (r) =>
         r.c.json({
@@ -68,7 +67,7 @@ export function platformRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/myself`,
+    `${API_V}/myself`,
     handle((r) => r.c.json({ ...formatUser(r, r.user), groups: { size: 0, items: [] } }), { scopes: READ_USER }),
   );
 
@@ -83,7 +82,7 @@ export function platformRoutes({ app, store, baseUrl }: RouteContext): void {
   };
 
   app.get(
-    `${V}/user`,
+    `${API_V}/user`,
     handle(
       (r) => {
         const accountId = r.c.req.query("accountId") ?? "";
@@ -99,31 +98,29 @@ export function platformRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/user/bulk`,
+    `${API_V}/user/bulk`,
     handle(
       (r) => {
         const ids = listParam(r.c, "accountId");
         const users = ids
           .map((id) => r.js.users.findOneBy("account_id", id))
           .filter((user): user is JiraUser => Boolean(user));
-        const startAt = intParam(r.c.req.query("startAt"), 0);
-        const maxResults = intParam(r.c.req.query("maxResults"), 10, 200);
-        const page = paginate(users, startAt, maxResults);
+        const { startAt, maxResults } = pageParams(r.c, 10, 200);
+        const page = paginate(users, { startAt, maxResults });
         return r.c.json({ ...page, values: page.values.map((user) => formatUser(r, user)) });
       },
       { scopes: READ_USER },
     ),
   );
 
-  for (const path of [`${V}/user/search`, `${V}/users/search`, `${V}/users`, `${V}/user/picker`]) {
+  for (const path of [`${API_V}/user/search`, `${API_V}/users/search`, `${API_V}/users`, `${API_V}/user/picker`]) {
     app.get(
       path,
       handle(
         (r) => {
           const query = r.c.req.query("query") ?? r.c.req.query("username");
           const accountId = r.c.req.query("accountId");
-          const startAt = intParam(r.c.req.query("startAt"), 0);
-          const maxResults = intParam(r.c.req.query("maxResults"), 50, 1000);
+          const { startAt, maxResults } = pageParams(r.c, 50, 1000);
           const users = r.js.users
             .all()
             .filter((user) => (accountId ? user.account_id === accountId : matchesQuery(user, query)))
@@ -143,7 +140,7 @@ export function platformRoutes({ app, store, baseUrl }: RouteContext): void {
     );
   }
 
-  for (const path of [`${V}/user/assignable/search`, `${V}/user/assignable/multiProjectSearch`]) {
+  for (const path of [`${API_V}/user/assignable/search`, `${API_V}/user/assignable/multiProjectSearch`]) {
     app.get(
       path,
       handle(
@@ -167,7 +164,7 @@ export function platformRoutes({ app, store, baseUrl }: RouteContext): void {
   }
 
   app.get(
-    `${V}/mypermissions`,
+    `${API_V}/mypermissions`,
     handle(
       (r) => {
         const requested = listParam(r.c, "permissions");
@@ -194,12 +191,12 @@ export function platformRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/issuetype`,
+    `${API_V}/issuetype`,
     handle((r) => r.c.json(r.js.issueTypes.all().map((type) => formatIssueType(r, type))), { scopes: READ_WORK }),
   );
 
   app.get(
-    `${V}/issuetype/project`,
+    `${API_V}/issuetype/project`,
     handle(
       (r) => {
         const project = findProject(r.js, r.c.req.query("projectId") ?? "");
@@ -213,7 +210,7 @@ export function platformRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/issuetype/:id`,
+    `${API_V}/issuetype/:id`,
     handle(
       (r) => {
         const type = findIssueType(r.js, r.c.req.param("id"));
@@ -225,12 +222,12 @@ export function platformRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/status`,
+    `${API_V}/status`,
     handle((r) => r.c.json(r.js.statuses.all().map((status) => formatStatus(r, status))), { scopes: READ_WORK }),
   );
 
   app.get(
-    `${V}/status/:idOrName`,
+    `${API_V}/status/:idOrName`,
     handle(
       (r) => {
         const status = findStatus(r.js, decodeURIComponent(r.c.req.param("idOrName")));
@@ -242,23 +239,23 @@ export function platformRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/statuscategory`,
+    `${API_V}/statuscategory`,
     handle((r) => r.c.json(allStatusCategories(r)), { scopes: READ_WORK }),
   );
 
   app.get(
-    `${V}/priority`,
+    `${API_V}/priority`,
     handle((r) => r.c.json(r.js.priorities.all().map((priority) => formatPriorityFull(r, priority))), {
       scopes: READ_WORK,
     }),
   );
 
   app.get(
-    `${V}/priority/search`,
+    `${API_V}/priority/search`,
     handle(
       (r) => {
         const all = r.js.priorities.all().map((priority) => formatPriorityFull(r, priority));
-        const page = paginate(all, intParam(r.c.req.query("startAt"), 0), intParam(r.c.req.query("maxResults"), 50));
+        const page = paginate(all, pageParams(r.c, 50));
         return r.c.json({ self: restUrl(r, "/priority/search"), ...page });
       },
       { scopes: READ_WORK },
@@ -266,7 +263,7 @@ export function platformRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/priority/:id`,
+    `${API_V}/priority/:id`,
     handle(
       (r) => {
         const priority = findPriority(r.js, r.c.req.param("id"));
@@ -278,14 +275,14 @@ export function platformRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/resolution`,
+    `${API_V}/resolution`,
     handle((r) => r.c.json(r.js.resolutions.all().map((resolution) => formatResolution(r, resolution))), {
       scopes: READ_WORK,
     }),
   );
 
   app.get(
-    `${V}/resolution/:id`,
+    `${API_V}/resolution/:id`,
     handle(
       (r) => {
         const resolution = findResolution(r.js, r.c.req.param("id"));
@@ -297,20 +294,16 @@ export function platformRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/field`,
+    `${API_V}/field`,
     handle((r) => r.c.json(allFields(r.js).map((field) => ({ ...field, key: field.id }))), { scopes: READ_WORK }),
   );
 
   app.get(
-    `${V}/label`,
+    `${API_V}/label`,
     handle(
       (r) => {
         const labels = [...new Set(r.js.issues.all().flatMap((issue) => issue.labels))].sort();
-        const page = paginate(
-          labels,
-          intParam(r.c.req.query("startAt"), 0),
-          intParam(r.c.req.query("maxResults"), 1000),
-        );
+        const page = paginate(labels, pageParams(r.c, 1000));
         return r.c.json(page);
       },
       { scopes: READ_WORK },
@@ -318,7 +311,7 @@ export function platformRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/issueLinkType`,
+    `${API_V}/issueLinkType`,
     handle(
       (r) =>
         r.c.json({
@@ -335,7 +328,7 @@ export function platformRoutes({ app, store, baseUrl }: RouteContext): void {
   );
 
   app.get(
-    `${V}/project/:key/statuses`,
+    `${API_V}/project/:key/statuses`,
     handle(
       (r) => {
         const project = findProject(r.js, r.c.req.param("key"));
