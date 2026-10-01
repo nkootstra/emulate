@@ -160,6 +160,19 @@ describe("JQL evaluation", () => {
     expect(keys("project = EMU ORDER BY key DESC")).toEqual(["EMU-5", "EMU-4", "EMU-3", "EMU-2", "EMU-1"]);
     expect(keys("project = EMU AND priority is not EMPTY ORDER BY priority DESC, key ASC")[0]).toBe("EMU-2");
     expect(keys("project = EMU ORDER BY summary ASC")[0]).toBe("EMU-3");
+    expect(keys("project = EMU ORDER BY rank ASC")).toEqual(["EMU-1", "EMU-2", "EMU-3", "EMU-4", "EMU-5"]);
+    expect(() => searchIssues(js, "project = EMU ORDER BY bogus", js.users.all()[0])).toThrow(
+      "Field 'bogus' does not exist or you do not have permission to view it.",
+    );
+  });
+
+  it("accepts every clause name for a field", () => {
+    expect(keys("type = Bug")).toEqual(keys("issuetype = Bug"));
+    expect(keys("label = frontend ORDER BY key")).toEqual(keys("labels = frontend ORDER BY key"));
+    expect(keys("issue = EMU-2")).toEqual(["EMU-2"]);
+    expect(keys("id = EMU-2")).toEqual(["EMU-2"]);
+    expect(keys("watchers = currentUser() AND project = OPS")).toEqual(["OPS-1"]);
+    expect(() => searchIssues(js, "rank = 1", js.users.all()[0])).toThrow(JqlError);
   });
 
   it("finds linked issues", async () => {

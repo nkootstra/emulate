@@ -1,7 +1,8 @@
 import type { JiraIssue, JiraStatusCategory, JiraUser } from "./entities.js";
 import type { JiraStore } from "./store.js";
 import { adfToText } from "./adf.js";
-import { findField } from "./fields.js";
+import { findField, SYSTEM_FIELDS } from "./fields.js";
+import { findIssue, findUser } from "./lookup.js";
 
 export class JqlError extends Error {
   constructor(message: string) {
@@ -286,16 +287,22 @@ interface EvalContext {
 
 type FieldKind = "ref" | "text" | "date" | "number" | "priority" | "key";
 
+/** Returned by `resolve` for literals such as `Unresolved` that mean "the field is empty". */
+const MATCHES_EMPTY = Symbol("matches empty");
+
 interface FieldHandler {
   name: string;
   kind: FieldKind;
   /** Current values of the field for an issue. Empty array means the field is empty. */
   get(issue: JiraIssue, ctx: EvalContext): Scalar[];
   /** Maps a literal from the query to comparable values. Throws for unknown values. */
-  resolve?(value: string, ctx: EvalContext): Scalar[];
+  resolve?(value: string, ctx: EvalContext): Scalar[] | typeof MATCHES_EMPTY;
+  /** ORDER BY key. Defaults to the first value from `get`, lowercased. */
+  sort?(issue: JiraIssue, ctx: EvalContext): Scalar | null;
 }
 
 const eqi = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+const lower = (value: string | undefined | null) => value?.toLowerCase() ?? null;
 
 function notFoundValue(value: string, field: string): JqlError {
   return new JqlError(`The value '${value}' does not exist for the field '${field}'.`);
@@ -317,12 +324,16 @@ function refResolver<T extends { id: number }>(
 
 function userResolver(field: string) {
   return (value: string, ctx: EvalContext): Scalar[] => {
-    const user = ctx.js.users
-      .all()
-      .find((u) => u.account_id === value || eqi(u.email, value) || eqi(u.display_name, value));
+    const user = findUser(ctx.js, value);
     if (!user) throw notFoundValue(value, field);
     return [user.account_id];
   };
+}
+
+function resolveIssue(value: string, ctx: EvalContext): Scalar[] {
+  const issue = findIssue(ctx.js, value);
+  if (!issue) throw new JqlError(`An issue with key '${value}' does not exist for field 'key'.`);
+  return [issue.id];
 }
 
 function dateOf(value: string | null | undefined): Scalar[] {
@@ -331,11 +342,9 @@ function dateOf(value: string | null | undefined): Scalar[] {
   return Number.isNaN(time) ? [] : [time];
 }
 
-function issueText(
-  issue: JiraIssue,
-  ctx: EvalContext,
-  parts: Array<"summary" | "description" | "environment" | "comment">,
-): string {
+type TextPart = "summary" | "description" | "environment" | "comment";
+
+function issueText(issue: JiraIssue, ctx: EvalContext, parts: TextPart[]): string {
   const chunks: string[] = [];
   if (parts.includes("summary")) chunks.push(issue.summary);
   if (parts.includes("description")) chunks.push(adfToText(issue.description));
@@ -352,200 +361,203 @@ const CATEGORY_ALIASES: Record<JiraStatusCategory, string[]> = {
   done: ["done", "Done", "3"],
 };
 
-function systemField(name: string): FieldHandler | undefined {
-  const text = (label: string, parts: Array<"summary" | "description" | "environment" | "comment">): FieldHandler => ({
-    name: label,
+function textField(name: string, parts: TextPart[]): FieldHandler {
+  return {
+    name,
     kind: "text",
     get: (issue, ctx) => {
       const value = issueText(issue, ctx, parts);
       return value ? [value] : [];
     },
-  });
-  switch (name.toLowerCase()) {
-    case "project":
-      return {
-        name: "project",
-        kind: "ref",
-        get: (issue) => [issue.project_id],
-        resolve: refResolver(
-          "project",
-          (ctx) => ctx.js.projects.all(),
-          (p) => [p.key, p.name],
-        ),
-      };
-    case "key":
-    case "issuekey":
-    case "id":
-    case "issue":
-      return {
-        name: "key",
-        kind: "key",
-        get: (issue) => [issue.id],
-        resolve: (value, ctx) => {
-          const issue = /^\d+$/.test(value)
-            ? ctx.js.issues.get(Number(value))
-            : ctx.js.issues.all().find((candidate) => eqi(candidate.key, value));
-          if (!issue) throw new JqlError(`An issue with key '${value}' does not exist for field 'key'.`);
-          return [issue.id];
-        },
-      };
-    case "summary":
-      return text("summary", ["summary"]);
-    case "description":
-      return text("description", ["description"]);
-    case "environment":
-      return text("environment", ["environment"]);
-    case "comment":
-      return text("comment", ["comment"]);
-    case "text":
-      return text("text", ["summary", "description", "environment", "comment"]);
-    case "status":
-      return {
-        name: "status",
-        kind: "ref",
-        get: (issue) => [issue.status_id],
-        resolve: refResolver(
-          "status",
-          (ctx) => ctx.js.statuses.all(),
-          (s) => [s.name],
-        ),
-      };
-    case "statuscategory":
-      return {
-        name: "statusCategory",
-        kind: "ref",
-        get: (issue, ctx) => {
-          const category = ctx.js.statuses.get(issue.status_id)?.category;
-          return category ? [category] : [];
-        },
-        resolve: (value) => {
-          const match = (Object.keys(CATEGORY_ALIASES) as JiraStatusCategory[]).find((key) =>
-            CATEGORY_ALIASES[key].some((alias) => eqi(alias, value)),
-          );
-          if (!match) throw notFoundValue(value, "statusCategory");
-          return [match];
-        },
-      };
-    case "assignee":
-    case "reporter":
-    case "creator": {
-      const key = `${name.toLowerCase()}_id` as "assignee_id" | "reporter_id" | "creator_id";
-      return {
-        name: name.toLowerCase(),
-        kind: "ref",
-        get: (issue) => (issue[key] ? [issue[key]!] : []),
-        resolve: userResolver(name.toLowerCase()),
-      };
-    }
-    case "watcher":
-    case "watchers":
-      return { name: "watcher", kind: "ref", get: (issue) => [...issue.watcher_ids], resolve: userResolver("watcher") };
-    case "priority":
-      return {
-        name: "priority",
-        kind: "priority",
-        get: (issue) => (issue.priority_id ? [issue.priority_id] : []),
-        resolve: refResolver(
-          "priority",
-          (ctx) => ctx.js.priorities.all(),
-          (p) => [p.name],
-        ),
-      };
-    case "issuetype":
-    case "type":
-      return {
-        name: "issuetype",
-        kind: "ref",
-        get: (issue) => [issue.issue_type_id],
-        resolve: refResolver(
-          "issuetype",
-          (ctx) => ctx.js.issueTypes.all(),
-          (t) => [t.name],
-        ),
-      };
-    case "labels":
-    case "label":
-      return { name: "labels", kind: "ref", get: (issue) => [...issue.labels], resolve: (value) => [value] };
-    case "resolution":
-      return {
-        name: "resolution",
-        kind: "ref",
-        get: (issue) => (issue.resolution_id ? [issue.resolution_id] : []),
-        resolve: (value, ctx) => {
-          if (eqi(value, "unresolved")) return ["__unresolved__"];
-          return refResolver(
+  };
+}
+
+function userField(name: string, key: "assignee_id" | "reporter_id" | "creator_id"): FieldHandler {
+  return {
+    name,
+    kind: "ref",
+    get: (issue) => (issue[key] ? [issue[key]!] : []),
+    resolve: userResolver(name),
+    sort: (issue, ctx) => lower(issue[key] ? ctx.js.users.findOneBy("account_id", issue[key]!)?.display_name : null),
+  };
+}
+
+function dateField(name: string, value: (issue: JiraIssue) => string | null): FieldHandler {
+  return { name, kind: "date", get: (issue) => dateOf(value(issue)) };
+}
+
+const sprintField: FieldHandler = {
+  name: "sprint",
+  kind: "ref",
+  get: (issue) => [...issue.closed_sprint_ids, ...(issue.sprint_id ? [issue.sprint_id] : [])],
+  resolve: refResolver(
+    "sprint",
+    (ctx) => ctx.js.sprints.all(),
+    (s) => [s.name],
+  ),
+};
+
+/**
+ * JQL behavior for each searchable system field, keyed by the field id in `SYSTEM_FIELDS`. Clause names
+ * (`type` for `issuetype`, `due` for `duedate`, ...) come from `SYSTEM_FIELDS`, plus the extra `aliases` below.
+ */
+const SYSTEM_JQL: Record<string, FieldHandler & { aliases?: string[] }> = {
+  project: {
+    name: "project",
+    kind: "ref",
+    get: (issue) => [issue.project_id],
+    resolve: refResolver(
+      "project",
+      (ctx) => ctx.js.projects.all(),
+      (p) => [p.key, p.name],
+    ),
+    sort: (issue, ctx) => ctx.js.projects.get(issue.project_id)?.key ?? null,
+  },
+  issuekey: {
+    name: "key",
+    kind: "key",
+    get: (issue) => [issue.id],
+    resolve: resolveIssue,
+    sort: (issue, ctx) =>
+      `${ctx.js.projects.get(issue.project_id)?.key ?? ""}-${String(issue.number).padStart(10, "0")}`,
+  },
+  summary: { ...textField("summary", ["summary"]), sort: (issue) => issue.summary.toLowerCase() },
+  description: textField("description", ["description"]),
+  environment: textField("environment", ["environment"]),
+  comment: textField("comment", ["comment"]),
+  text: { ...textField("text", ["summary", "description", "environment", "comment"]), aliases: ["text"] },
+  status: {
+    name: "status",
+    kind: "ref",
+    get: (issue) => [issue.status_id],
+    resolve: refResolver(
+      "status",
+      (ctx) => ctx.js.statuses.all(),
+      (s) => [s.name],
+    ),
+    sort: (issue, ctx) => lower(ctx.js.statuses.get(issue.status_id)?.name),
+  },
+  statusCategory: {
+    name: "statusCategory",
+    kind: "ref",
+    get: (issue, ctx) => {
+      const category = ctx.js.statuses.get(issue.status_id)?.category;
+      return category ? [category] : [];
+    },
+    resolve: (value) => {
+      const match = (Object.keys(CATEGORY_ALIASES) as JiraStatusCategory[]).find((key) =>
+        CATEGORY_ALIASES[key].some((alias) => eqi(alias, value)),
+      );
+      if (!match) throw notFoundValue(value, "statusCategory");
+      return [match];
+    },
+  },
+  assignee: userField("assignee", "assignee_id"),
+  reporter: userField("reporter", "reporter_id"),
+  creator: userField("creator", "creator_id"),
+  watches: { name: "watcher", kind: "ref", get: (issue) => [...issue.watcher_ids], resolve: userResolver("watcher") },
+  priority: {
+    name: "priority",
+    kind: "priority",
+    get: (issue) => (issue.priority_id ? [issue.priority_id] : []),
+    resolve: refResolver(
+      "priority",
+      (ctx) => ctx.js.priorities.all(),
+      (p) => [p.name],
+    ),
+    sort: (issue) => (issue.priority_id ? -issue.priority_id : null),
+  },
+  issuetype: {
+    name: "issuetype",
+    kind: "ref",
+    get: (issue) => [issue.issue_type_id],
+    resolve: refResolver(
+      "issuetype",
+      (ctx) => ctx.js.issueTypes.all(),
+      (t) => [t.name],
+    ),
+    sort: (issue, ctx) => lower(ctx.js.issueTypes.get(issue.issue_type_id)?.name),
+  },
+  labels: {
+    name: "labels",
+    kind: "ref",
+    get: (issue) => [...issue.labels],
+    resolve: (value) => [value],
+    aliases: ["label"],
+  },
+  resolution: {
+    name: "resolution",
+    kind: "ref",
+    get: (issue) => (issue.resolution_id ? [issue.resolution_id] : []),
+    resolve: (value, ctx) =>
+      eqi(value, "unresolved")
+        ? MATCHES_EMPTY
+        : refResolver(
             "resolution",
             (c) => c.js.resolutions.all(),
             (r) => [r.name],
-          )(value, ctx);
-        },
-      };
-    case "parent":
-      return {
-        name: "parent",
-        kind: "ref",
-        get: (issue) => (issue.parent_id ? [issue.parent_id] : []),
-        resolve: (value, ctx) => systemField("key")!.resolve!(value, ctx),
-      };
-    case "created":
-    case "createddate":
-      return { name: "created", kind: "date", get: (issue) => dateOf(issue.created_at) };
-    case "updated":
-    case "updateddate":
-      return { name: "updated", kind: "date", get: (issue) => dateOf(issue.updated_at) };
-    case "duedate":
-    case "due":
-      return { name: "duedate", kind: "date", get: (issue) => dateOf(issue.due_date) };
-    case "resolutiondate":
-    case "resolved":
-      return { name: "resolutiondate", kind: "date", get: (issue) => dateOf(issue.resolution_date) };
-    case "statuscategorychangeddate":
-      return { name: "statusCategoryChangedDate", kind: "date", get: (issue) => dateOf(issue.status_changed_at) };
-    case "sprint":
-      return {
-        name: "sprint",
-        kind: "ref",
-        get: (issue) => [...issue.closed_sprint_ids, ...(issue.sprint_id ? [issue.sprint_id] : [])],
-        resolve: refResolver(
-          "sprint",
-          (ctx) => ctx.js.sprints.all(),
-          (s) => [s.name],
-        ),
-      };
-    case "component":
-      return {
-        name: "component",
-        kind: "ref",
-        get: (issue) => [...issue.component_ids],
-        resolve: refResolver(
-          "component",
-          (ctx) => ctx.js.components.all(),
-          (c) => [c.name],
-        ),
-      };
-    case "fixversion":
-      return {
-        name: "fixVersion",
-        kind: "ref",
-        get: (issue) => [...issue.fix_version_ids],
-        resolve: refResolver(
-          "fixVersion",
-          (ctx) => ctx.js.versions.all(),
-          (v) => [v.name],
-        ),
-      };
-    default:
-      return undefined;
-  }
+          )(value, ctx),
+  },
+  parent: {
+    name: "parent",
+    kind: "ref",
+    get: (issue) => (issue.parent_id ? [issue.parent_id] : []),
+    resolve: resolveIssue,
+  },
+  created: dateField("created", (issue) => issue.created_at),
+  updated: dateField("updated", (issue) => issue.updated_at),
+  duedate: dateField("duedate", (issue) => issue.due_date),
+  resolutiondate: dateField("resolutiondate", (issue) => issue.resolution_date),
+  statuscategorychangedate: dateField("statusCategoryChangedDate", (issue) => issue.status_changed_at),
+  components: {
+    name: "component",
+    kind: "ref",
+    get: (issue) => [...issue.component_ids],
+    resolve: refResolver(
+      "component",
+      (ctx) => ctx.js.components.all(),
+      (c) => [c.name],
+    ),
+  },
+  fixVersions: {
+    name: "fixVersion",
+    kind: "ref",
+    get: (issue) => [...issue.fix_version_ids],
+    resolve: refResolver(
+      "fixVersion",
+      (ctx) => ctx.js.versions.all(),
+      (v) => [v.name],
+    ),
+  },
+  sprint: { ...sprintField, aliases: ["sprint"] },
+};
+
+/** Clause name (lowercased) to handler, built once from `SYSTEM_FIELDS` clause names and `SYSTEM_JQL` aliases. */
+const SYSTEM_CLAUSES = new Map<string, FieldHandler>();
+for (const field of SYSTEM_FIELDS) {
+  const handler = SYSTEM_JQL[field.id];
+  if (!handler) continue;
+  for (const clause of [field.id, ...field.clauseNames]) SYSTEM_CLAUSES.set(clause.toLowerCase(), handler);
+}
+for (const handler of Object.values(SYSTEM_JQL)) {
+  for (const alias of handler.aliases ?? []) SYSTEM_CLAUSES.set(alias.toLowerCase(), handler);
 }
 
+/** ORDER BY Rank is accepted and falls back to creation order, as the emulator has no rank field. */
+const rankSort: FieldHandler = {
+  name: "rank",
+  kind: "number",
+  get: () => [],
+  sort: (issue) => issue.id,
+};
+
 function resolveFieldHandler(js: JiraStore, name: string): FieldHandler {
-  const system = systemField(name);
+  const system = SYSTEM_CLAUSES.get(name.toLowerCase());
   if (system) return system;
   const def = findField(js, name);
   const custom = def?.custom ? js.customFields.findOneBy("field_id", def.id) : undefined;
   if (!custom) throw new JqlError(`Field '${name}' does not exist or you do not have permission to view it.`);
-  if (custom.type === "sprint") return systemField("sprint")!;
+  if (custom.type === "sprint") return sprintField;
   const raw = (issue: JiraIssue): Scalar[] => {
     const value = issue.custom_fields[custom.field_id];
     if (value === null || value === undefined) return [];
@@ -556,11 +568,7 @@ function resolveFieldHandler(js: JiraStore, name: string): FieldHandler {
       return { name: custom.name, kind: "number", get: raw, resolve: (value) => [Number(value)] };
     case "date":
     case "datetime":
-      return {
-        name: custom.name,
-        kind: "date",
-        get: (issue) => dateOf(issue.custom_fields[custom.field_id] as string | null),
-      };
+      return dateField(custom.name, (issue) => issue.custom_fields[custom.field_id] as string | null);
     case "string":
       return { name: custom.name, kind: "text", get: raw };
     case "user":
@@ -568,6 +576,10 @@ function resolveFieldHandler(js: JiraStore, name: string): FieldHandler {
     default:
       return { name: custom.name, kind: "ref", get: raw, resolve: (value) => [value] };
   }
+}
+
+function sortHandler(js: JiraStore, name: string): FieldHandler {
+  return name.toLowerCase() === "rank" ? rankSort : resolveFieldHandler(js, name);
 }
 
 // Functions
@@ -734,7 +746,8 @@ function resolveOperand(handler: FieldHandler, operand: Operand, ctx: EvalContex
       throw new JqlError(`The value '${operand.value}' is not a valid number for '${handler.name}'.`);
     return { empty: false, values: [number] };
   }
-  return { empty: false, values: handler.resolve ? handler.resolve(operand.value, ctx) : [operand.value] };
+  const values = handler.resolve ? handler.resolve(operand.value, ctx) : [operand.value];
+  return values === MATCHES_EMPTY ? { empty: true } : { empty: false, values };
 }
 
 function wordsOf(text: string): string[] {
@@ -783,7 +796,6 @@ function compileClause(node: Extract<JqlNode, { type: "clause" }>, ctx: EvalCont
   const wantsEmpty = resolved.some((entry) => entry.empty);
   const values = resolved.flatMap((entry) => (entry.empty ? [] : entry.values));
   const dayPrecision = resolved.some((entry) => !entry.empty && entry.dayPrecision);
-  const unresolved = values.includes("__unresolved__");
 
   const eq = (a: Scalar, b: Scalar) =>
     handler.kind === "date" && dayPrecision
@@ -794,7 +806,7 @@ function compileClause(node: Extract<JqlNode, { type: "clause" }>, ctx: EvalCont
 
   const matchesAny = (issue: JiraIssue) => {
     const current = handler.get(issue, ctx);
-    if (current.length === 0) return wantsEmpty || unresolved;
+    if (current.length === 0) return wantsEmpty;
     return current.some((value) => values.some((candidate) => eq(value, candidate)));
   };
 
@@ -857,45 +869,17 @@ function compile(node: JqlNode, ctx: EvalContext): (issue: JiraIssue) => boolean
   }
 }
 
-function sortValue(issue: JiraIssue, field: string, ctx: EvalContext): Scalar | null {
-  const js = ctx.js;
-  switch (field.toLowerCase()) {
-    case "key":
-    case "issuekey": {
-      const project = js.projects.get(issue.project_id);
-      return `${project?.key ?? ""}-${String(issue.number).padStart(10, "0")}`;
-    }
-    case "id":
-    case "rank":
-      return issue.id;
-    case "priority":
-      return issue.priority_id ? -issue.priority_id : null;
-    case "status":
-      return js.statuses.get(issue.status_id)?.name.toLowerCase() ?? null;
-    case "summary":
-      return issue.summary.toLowerCase();
-    case "assignee":
-    case "reporter": {
-      const id = field.toLowerCase() === "assignee" ? issue.assignee_id : issue.reporter_id;
-      return id ? (js.users.findOneBy("account_id", id)?.display_name.toLowerCase() ?? null) : null;
-    }
-    case "issuetype":
-    case "type":
-      return js.issueTypes.get(issue.issue_type_id)?.name.toLowerCase() ?? null;
-    case "project":
-      return js.projects.get(issue.project_id)?.key ?? null;
-    default: {
-      const handler = resolveFieldHandler(js, field);
-      const value = handler.get(issue, ctx)[0];
-      if (value === undefined) return null;
-      return typeof value === "string" ? value.toLowerCase() : value;
-    }
-  }
+function sortValue(handler: FieldHandler, issue: JiraIssue, ctx: EvalContext): Scalar | null {
+  if (handler.sort) return handler.sort(issue, ctx);
+  const value = handler.get(issue, ctx)[0];
+  if (value === undefined) return null;
+  return typeof value === "string" ? value.toLowerCase() : value;
 }
 
 function sortIssues(issues: JiraIssue[], orderBy: OrderBy[], ctx: EvalContext): JiraIssue[] {
   const order = orderBy.length > 0 ? orderBy : [{ field: "created", direction: "DESC" as const }];
-  const keyed = issues.map((issue) => ({ issue, keys: order.map((entry) => sortValue(issue, entry.field, ctx)) }));
+  const handlers = order.map((entry) => sortHandler(ctx.js, entry.field));
+  const keyed = issues.map((issue) => ({ issue, keys: handlers.map((handler) => sortValue(handler, issue, ctx)) }));
   keyed.sort((a, b) => {
     for (let i = 0; i < order.length; i++) {
       const av = a.keys[i];
@@ -920,26 +904,6 @@ export function searchIssues(js: JiraStore, jql: string, user: JiraUser, now = n
 export function runQuery(js: JiraStore, query: JqlQuery, user: JiraUser, now = new Date()): JiraIssue[] {
   const ctx: EvalContext = { js, user, now };
   const predicate = query.where ? compile(query.where, ctx) : () => true;
-  // Validate ORDER BY fields up front so unknown fields fail even with no matches.
-  for (const entry of query.orderBy) {
-    if (
-      ![
-        "key",
-        "issuekey",
-        "id",
-        "rank",
-        "priority",
-        "status",
-        "summary",
-        "assignee",
-        "reporter",
-        "issuetype",
-        "type",
-        "project",
-      ].includes(entry.field.toLowerCase())
-    ) {
-      resolveFieldHandler(js, entry.field);
-    }
-  }
+  // Resolving the sort handlers inside sortIssues also rejects unknown ORDER BY fields when nothing matches.
   return sortIssues(js.issues.all().filter(predicate), query.orderBy, ctx);
 }
