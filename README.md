@@ -1266,7 +1266,7 @@ The JQL engine supports `AND`, `OR`, `NOT`, parentheses, `=`, `!=`, `~`, `!~`, `
 
 - `GET|POST /rest/webhooks/1.0/webhook`, `GET|PUT|DELETE /rest/webhooks/1.0/webhook/{id}` - admin webhooks with JQL filters, `excludeBody`, and an optional `secret` that signs deliveries with `X-Hub-Signature: sha256=<hmac>`
 - `GET|POST|DELETE /rest/api/3/webhook`, `PUT /rest/api/3/webhook/refresh` - dynamic webhooks for OAuth 2.0 apps
-- Events: `jira:issue_created`, `jira:issue_updated` (with `changelog` and `issue_event_type_name`), `jira:issue_deleted`, `comment_created`, `comment_updated`, `comment_deleted`
+- Events: `jira:issue_created`, `jira:issue_updated` (with `changelog` and `issue_event_type_name`), sent once per edit even when the edit also adds a comment, `jira:issue_deleted`, `comment_created`, `comment_updated`, `comment_deleted`
 
 ### OAuth 2.0 (3LO) And The API Gateway
 

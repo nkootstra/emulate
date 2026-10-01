@@ -151,7 +151,7 @@ Supports `AND`, `OR`, `NOT`, parentheses, `=`, `!=`, `~`, `!~`, `>`, `>=`, `<`, 
 
 - Admin webhooks: `GET|POST /rest/webhooks/1.0/webhook`, `GET|PUT|DELETE /rest/webhooks/1.0/webhook/{id}` with a JQL filter in `filters["issue-related-events-section"]`, `excludeBody`, and `secret`. Secrets sign deliveries with `X-Hub-Signature: sha256=<hmac-hex>`.
 - Dynamic webhooks for OAuth apps: `GET|POST|DELETE /rest/api/3/webhook`, `PUT /rest/api/3/webhook/refresh`. Deliveries include `matchedWebhookIds`.
-- Events: `jira:issue_created`, `jira:issue_updated` (with `changelog` and `issue_event_type_name` such as `issue_generic`, `issue_assigned`, `issue_commented`), `jira:issue_deleted`, `comment_created`, `comment_updated`, `comment_deleted`.
+- Events: `jira:issue_created`, `jira:issue_updated` (with `changelog` and `issue_event_type_name` such as `issue_generic`, `issue_assigned`, `issue_commented`), sent once per edit even when the edit also adds a comment, `jira:issue_deleted`, `comment_created`, `comment_updated`, `comment_deleted`.
 
 ## OAuth 2.0 (3LO)
 
@@ -179,7 +179,7 @@ const issue = await client.issues.createIssue({
 });
 ```
 
-For OAuth 2.0 clients configured with a `cloudId`, route requests for `api.atlassian.com` to the emulator URL.
+jira.js always sends OAuth 2.0 requests (clients configured with a `cloudId`) to `https://api.atlassian.com/ex/jira/{cloudId}`, so point those at the emulator with a proxy or a `fetch` wrapper, or use Basic auth with `host` as above. Any HTTP client can call `/ex/jira/{cloudId}/rest/api/3/...` on the emulator directly.
 
 ## Inspector
 
