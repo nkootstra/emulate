@@ -1,44 +1,35 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAgileClient, createCloudClient } from "jira.js";
 import { DEFAULT_ADMIN_EMAIL, DEFAULT_API_TOKEN, DEFAULT_CLOUD_ID, getJiraStore } from "../index.js";
-import { adf, createJiraTestApp, jiraTestBaseUrl, type JiraTestApp } from "./helpers.js";
+import { adf, startJiraTestEmulator, type JiraTestEmulator } from "./helpers.js";
 
 /**
- * Drives the emulator through jira.js with `onSchemaMismatch: "throw"`, so every response is validated
- * against the client's Jira Cloud schemas.
+ * Drives the emulator through jira.js over a real local server with `onSchemaMismatch: "throw"`,
+ * so every response is validated against the client's Jira Cloud schemas.
  */
 describe("jira.js conformance", () => {
-  let t: JiraTestApp;
-  let originalFetch: typeof fetch;
-
-  beforeEach(() => {
-    t = createJiraTestApp();
-    originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-      const request = new Request(input, init);
-      const url = new URL(request.url);
-      if (
-        url.origin === jiraTestBaseUrl ||
-        url.hostname === "api.atlassian.com" ||
-        url.hostname === "auth.atlassian.com"
-      ) {
-        const local = new URL(`${url.pathname}${url.search}`, jiraTestBaseUrl);
-        return t.app.request(new Request(local, request));
-      }
-      return originalFetch(input, init);
-    }) as typeof fetch;
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  const config = {
-    host: jiraTestBaseUrl,
-    auth: { type: "basic" as const, email: DEFAULT_ADMIN_EMAIL, apiToken: DEFAULT_API_TOKEN },
-    onSchemaMismatch: "throw" as const,
-    retry: { maxAttempts: 1 },
+  let t: JiraTestEmulator;
+  let config: {
+    host: string;
+    auth: { type: "basic"; email: string; apiToken: string };
+    onSchemaMismatch: "throw";
+    retry: { maxAttempts: number };
   };
+
+  beforeEach(async () => {
+    t = await startJiraTestEmulator();
+    config = {
+      host: t.url,
+      auth: { type: "basic", email: DEFAULT_ADMIN_EMAIL, apiToken: DEFAULT_API_TOKEN },
+      onSchemaMismatch: "throw",
+      retry: { maxAttempts: 1 },
+    };
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await t.close();
+  });
 
   it("covers the core issue workflow with basic auth", async () => {
     const client = createCloudClient(config);
@@ -160,6 +151,15 @@ describe("jira.js conformance", () => {
       scopes: ["read:jira-work", "write:jira-work", "read:jira-user"],
       expires_at: null,
       revoked: false,
+    });
+    // jira.js hardcodes https://api.atlassian.com/ex/jira/{cloudId} for OAuth 2.0, so only that host is
+    // rerouted to the local server. The request still goes over HTTP through the full middleware stack.
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.hostname !== "api.atlassian.com") return realFetch(request);
+      return realFetch(new Request(`${t.url}${url.pathname}${url.search}`, request));
     });
     const client = createCloudClient({
       auth: { type: "oauth2", accessToken: "jira_sdk_oauth", cloudId: DEFAULT_CLOUD_ID },
