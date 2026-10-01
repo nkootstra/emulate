@@ -177,6 +177,7 @@ export function platformRoutes({ app, store, baseUrl }: RouteContext): void {
             name: key
               .toLowerCase()
               .split("_")
+              .filter(Boolean)
               .map((part) => part[0].toUpperCase() + part.slice(1))
               .join(" "),
             type: ADMIN_ONLY.has(key) ? "GLOBAL" : "PROJECT",

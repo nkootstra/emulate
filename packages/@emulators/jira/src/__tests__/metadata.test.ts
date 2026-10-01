@@ -260,5 +260,12 @@ describe("Jira metadata", () => {
       });
       expect(dev.json.permissions.ADMINISTER.havePermission).toBe(false);
     });
+
+    it("names permission keys with empty underscore segments", async () => {
+      const res = await api(t.app, "/rest/api/3/mypermissions?permissions=_,EDIT__ISSUES");
+      expect(res.status).toBe(200);
+      expect(res.json.permissions._.name).toBe("");
+      expect(res.json.permissions.EDIT__ISSUES.name).toBe("Edit Issues");
+    });
   });
 });
