@@ -141,6 +141,22 @@ describe("Jira webhooks", () => {
     expect(captured[2].json.issue_event_type_name).toBe("issue_assigned");
   });
 
+  it("sends one issue_updated for an edit that changes a field and adds a comment", async () => {
+    await register({
+      name: "Edits",
+      url: "https://example.test/e",
+      events: ["comment_created", "jira:issue_updated"],
+    });
+    await api(t.app, "/rest/api/3/issue/EMU-1", {
+      method: "PUT",
+      body: { fields: { summary: "Changed" }, update: { comment: [{ add: { body: adf("Why") } }] } },
+    });
+    expect(captured.map((c) => c.json.webhookEvent)).toEqual(["comment_created", "jira:issue_updated"]);
+    expect(captured[1].json.issue_event_type_name).toBe("issue_updated");
+    expect(captured[1].json.changelog.items[0]).toMatchObject({ field: "summary", toString: "Changed" });
+    expect(captured[1].json.comment.body).toBe("Why");
+  });
+
   it("delivers comment events and the matching issue_commented update", async () => {
     await register({
       name: "Comments",

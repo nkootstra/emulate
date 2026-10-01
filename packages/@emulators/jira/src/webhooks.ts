@@ -105,14 +105,15 @@ export async function emitCommentEvent(
 
 /** Sends the issue and comment events for the result of an edit or transition. */
 export async function emitEditEvents(actor: Actor, result: EditIssueResult): Promise<void> {
-  if (result.changelog) {
-    await emitIssueEvent(actor, "jira:issue_updated", result.issue, { changelog: result.changelog });
-  }
   for (const comment of result.comments) {
     await emitCommentEvent(actor, "comment_created", result.issue, comment);
   }
-  if (result.comments.length > 0) {
-    await emitIssueEvent(actor, "jira:issue_updated", result.issue, { comments: result.comments });
+  // Like Jira, one edit sends one jira:issue_updated, carrying both the changelog and the new comment.
+  if (result.changelog || result.comments.length > 0) {
+    await emitIssueEvent(actor, "jira:issue_updated", result.issue, {
+      changelog: result.changelog,
+      comments: result.comments,
+    });
   }
 }
 

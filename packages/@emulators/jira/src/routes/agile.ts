@@ -318,13 +318,12 @@ export function agileRoutes({ app, store, baseUrl }: RouteContext): void {
               throw new JiraError(400, ["The sprint must have a start date and an end date before it can be started."]);
             }
             next.state = target;
-            if (target === "closed") {
-              next.complete_date = new Date().toISOString();
-              await closeSprintIssues(r, sprint);
-            }
+            if (target === "closed") next.complete_date = new Date().toISOString();
           }
           const { id, created_at: _c, updated_at: _u, ...data } = next;
-          return r.c.json(formatSprint(r, r.js.sprints.update(id, data)!));
+          const updated = r.js.sprints.update(id, data)!;
+          if (sprint.state !== "closed" && updated.state === "closed") await closeSprintIssues(r, updated);
+          return r.c.json(formatSprint(r, updated));
         },
         { scopes: WRITE },
       );
@@ -412,15 +411,17 @@ export function agileRoutes({ app, store, baseUrl }: RouteContext): void {
   }
 }
 
-/** Completed issues stay in the closed sprint. Everything else goes back to the backlog. */
+/**
+ * Completed issues stay in the closed sprint. Everything else goes back to the backlog through the normal
+ * edit path, so the move is recorded in the changelog and sent to webhooks.
+ */
 async function closeSprintIssues(r: JiraRequest, sprint: JiraSprint): Promise<void> {
   for (const issue of r.js.issues.findBy("sprint_id", sprint.id)) {
-    const done = r.js.statuses.get(issue.status_id)?.category === "done";
-    if (!done) {
-      r.js.issues.update(issue.id, {
-        sprint_id: null,
-        closed_sprint_ids: [...new Set([...issue.closed_sprint_ids, sprint.id])],
-      });
-    }
+    if (r.js.statuses.get(issue.status_id)?.category === "done") continue;
+    const result = editIssue(r, issue, {}, (draft) => {
+      draft.sprint_id = null;
+      draft.closed_sprint_ids = [...new Set([...draft.closed_sprint_ids, sprint.id])];
+    });
+    await emitEditEvents(r, result);
   }
 }

@@ -99,6 +99,8 @@ describe("Jira Agile API", () => {
     // Completed issues stay in the closed sprint; open issues go back to the backlog.
     const backlog = await api(t.app, `${A}/board/1/backlog`);
     expect(backlog.json.issues.map((i: any) => i.key)).toEqual(["EMU-3"]);
+    const changelog = await api(t.app, "/rest/api/3/issue/EMU-3/changelog");
+    expect(changelog.json.values.at(-1).items[0]).toMatchObject({ field: "Sprint", fromString: "Sprint 2", to: null });
     const search = await api(t.app, "/rest/api/3/search/jql", {
       method: "POST",
       body: { jql: `sprint = ${id} ORDER BY key`, fields: ["summary"] },
