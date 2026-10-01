@@ -1,5 +1,6 @@
 import type {
   AdfNode,
+  JiraCustomField,
   JiraChangelog,
   JiraComment,
   JiraIssue,
@@ -175,21 +176,10 @@ export interface IssueFormatOptions {
   expand?: string[];
 }
 
-export function issueFieldValues(r: Fmt, issue: JiraIssue): Record<string, unknown> {
+/** Formats an issue's links from its own side: each entry names the other issue after its role. */
+function formatIssueLinks(r: Fmt, issue: JiraIssue) {
   const js = r.js;
-  const statuses = js.statuses;
-  const comments = js.comments.findBy("issue_id", issue.id).sort((a, b) => a.id - b.id);
-  const worklogs = js.worklogs.findBy("issue_id", issue.id).sort((a, b) => a.id - b.id);
-  const timeSpent = worklogs.reduce((sum, worklog) => sum + worklog.time_spent_seconds, 0);
-  const parent = issue.parent_id ? js.issues.get(issue.parent_id) : undefined;
-  const subtasks = js.issues
-    .findBy("parent_id", issue.id)
-    .filter((child) => js.issueTypes.get(child.issue_type_id)?.subtask)
-    .sort((a, b) => a.id - b.id);
-  const links = [
-    ...js.issueLinks.findBy("inward_issue_id", issue.id),
-    ...js.issueLinks.findBy("outward_issue_id", issue.id),
-  ]
+  return [...js.issueLinks.findBy("inward_issue_id", issue.id), ...js.issueLinks.findBy("outward_issue_id", issue.id)]
     .sort((a, b) => a.id - b.id)
     .map((link) => {
       const type = js.issueLinkTypes.get(link.type_id);
@@ -212,90 +202,117 @@ export function issueFieldValues(r: Fmt, issue: JiraIssue): Record<string, unkno
         ...(other ? { [isSource ? "outwardIssue" : "inwardIssue"]: formatIssueRef(r, other) } : {}),
       };
     });
+}
 
-  const values: Record<string, unknown> = {
-    statuscategorychangedate: jiraTime(issue.status_changed_at),
-    issuetype: formatIssueType(r, js.issueTypes.get(issue.issue_type_id)),
-    timespent: timeSpent || null,
-    aggregatetimespent: timeSpent || null,
-    project: formatProjectRef(r, js.projects.get(issue.project_id)),
-    fixVersions: issue.fix_version_ids
-      .map((id) => js.versions.get(id))
-      .filter(Boolean)
-      .map((version) => formatVersion(r, version!)),
-    resolution: formatResolution(r, issue.resolution_id ? js.resolutions.get(issue.resolution_id) : null),
-    resolutiondate: jiraTime(issue.resolution_date),
-    workratio: -1,
-    watches: {
+/**
+ * Getters for every field of an issue, in Jira's response order. They are lazy so a request for a few
+ * fields (search with `fields=key,summary`) does not load comments, worklogs, and links for every issue.
+ */
+export function issueFieldGetters(r: Fmt, issue: JiraIssue): Record<string, () => unknown> {
+  const js = r.js;
+  const worklogs = () => js.worklogs.findBy("issue_id", issue.id).sort((a, b) => a.id - b.id);
+  const timeSpent = () => worklogs().reduce((sum, worklog) => sum + worklog.time_spent_seconds, 0) || null;
+  const parent = issue.parent_id ? js.issues.get(issue.parent_id) : undefined;
+
+  const getters: Record<string, () => unknown> = {
+    statuscategorychangedate: () => jiraTime(issue.status_changed_at),
+    issuetype: () => formatIssueType(r, js.issueTypes.get(issue.issue_type_id)),
+    timespent: timeSpent,
+    aggregatetimespent: timeSpent,
+    project: () => formatProjectRef(r, js.projects.get(issue.project_id)),
+    fixVersions: () =>
+      issue.fix_version_ids
+        .map((id) => js.versions.get(id))
+        .filter(Boolean)
+        .map((version) => formatVersion(r, version!)),
+    resolution: () => formatResolution(r, issue.resolution_id ? js.resolutions.get(issue.resolution_id) : null),
+    resolutiondate: () => jiraTime(issue.resolution_date),
+    workratio: () => -1,
+    watches: () => ({
       self: restUrl(r, `/issue/${issue.key}/watchers`),
       watchCount: issue.watcher_ids.length,
       isWatching: r.user ? issue.watcher_ids.includes(r.user.account_id) : false,
+    }),
+    lastViewed: () => null,
+    created: () => jiraTime(issue.created_at),
+    priority: () => formatPriority(r, issue.priority_id ? js.priorities.get(issue.priority_id) : null),
+    labels: () => [...issue.labels],
+    summary: () => issue.summary,
+    issuelinks: () => formatIssueLinks(r, issue),
+    assignee: () => formatUserById(r, issue.assignee_id),
+    updated: () => jiraTime(issue.updated_at),
+    status: () => formatStatus(r, js.statuses.get(issue.status_id)),
+    components: () =>
+      issue.component_ids
+        .map((id) => js.components.get(id))
+        .filter(Boolean)
+        .map((component) => formatComponent(r, component!)),
+    description: () => formatBody(r, issue.description),
+    environment: () => formatBody(r, issue.environment),
+    duedate: () => issue.due_date,
+    creator: () => formatUserById(r, issue.creator_id),
+    reporter: () => formatUserById(r, issue.reporter_id),
+    subtasks: () =>
+      js.issues
+        .findBy("parent_id", issue.id)
+        .filter((child) => js.issueTypes.get(child.issue_type_id)?.subtask)
+        .sort((a, b) => a.id - b.id)
+        .map((child) => formatIssueRef(r, child)),
+    ...(parent ? { parent: () => formatIssueRef(r, parent) } : {}),
+    comment: () => {
+      const comments = js.comments.findBy("issue_id", issue.id).sort((a, b) => a.id - b.id);
+      return {
+        comments: comments.map((comment) => formatComment(r, comment)),
+        self: restUrl(r, `/issue/${issue.id}/comment`),
+        maxResults: comments.length,
+        total: comments.length,
+        startAt: 0,
+      };
     },
-    lastViewed: null,
-    created: jiraTime(issue.created_at),
-    priority: formatPriority(r, issue.priority_id ? js.priorities.get(issue.priority_id) : null),
-    labels: [...issue.labels],
-    summary: issue.summary,
-    issuelinks: links,
-    assignee: formatUserById(r, issue.assignee_id),
-    updated: jiraTime(issue.updated_at),
-    status: formatStatus(r, statuses.get(issue.status_id)),
-    components: issue.component_ids
-      .map((id) => js.components.get(id))
-      .filter(Boolean)
-      .map((component) => formatComponent(r, component!)),
-    description: formatBody(r, issue.description),
-    environment: formatBody(r, issue.environment),
-    duedate: issue.due_date,
-    creator: formatUserById(r, issue.creator_id),
-    reporter: formatUserById(r, issue.reporter_id),
-    subtasks: subtasks.map((child) => formatIssueRef(r, child)),
-    ...(parent ? { parent: formatIssueRef(r, parent) } : {}),
-    comment: {
-      comments: comments.map((comment) => formatComment(r, comment)),
-      self: restUrl(r, `/issue/${issue.id}/comment`),
-      maxResults: comments.length,
-      total: comments.length,
-      startAt: 0,
+    worklog: () => {
+      const all = worklogs();
+      return {
+        startAt: 0,
+        maxResults: 20,
+        total: all.length,
+        worklogs: all.slice(0, 20).map((worklog) => formatWorklog(r, worklog)),
+      };
     },
-    worklog: {
-      startAt: 0,
-      maxResults: 20,
-      total: worklogs.length,
-      worklogs: worklogs.slice(0, 20).map((worklog) => formatWorklog(r, worklog)),
-    },
-    votes: { self: restUrl(r, `/issue/${issue.key}/votes`), votes: 0, hasVoted: false },
+    votes: () => ({ self: restUrl(r, `/issue/${issue.key}/votes`), votes: 0, hasVoted: false }),
   };
 
   for (const field of js.customFields.all()) {
-    if (field.type === "sprint") {
+    getters[field.field_id] = () => customFieldValue(r, issue, field);
+  }
+  return getters;
+}
+
+function customFieldValue(r: Fmt, issue: JiraIssue, field: JiraCustomField): unknown {
+  const value = issue.custom_fields[field.field_id];
+  switch (field.type) {
+    case "sprint": {
       const sprints = [...issue.closed_sprint_ids, ...(issue.sprint_id ? [issue.sprint_id] : [])]
-        .map((id) => js.sprints.get(id))
+        .map((id) => r.js.sprints.get(id))
         .filter(Boolean)
         .map((sprint) => formatSprint(r, sprint!));
-      values[field.field_id] = sprints.length > 0 ? sprints : null;
-    } else if (field.type === "user") {
-      values[field.field_id] = formatUserById(r, issue.custom_fields[field.field_id] as string | null);
-    } else if (field.type === "option") {
-      const value = issue.custom_fields[field.field_id];
-      values[field.field_id] =
-        value == null ? null : { self: restUrl(r, `/customFieldOption/${field.id}`), value, id: String(field.id) };
-    } else {
-      values[field.field_id] = issue.custom_fields[field.field_id] ?? null;
+      return sprints.length > 0 ? sprints : null;
     }
+    case "user":
+      return formatUserById(r, value as string | null);
+    case "option":
+      return value == null ? null : { self: restUrl(r, `/customFieldOption/${field.id}`), value, id: String(field.id) };
+    default:
+      return value ?? null;
   }
-
-  return values;
 }
 
 export function formatIssue(r: Fmt, issue: JiraIssue, opts: IssueFormatOptions = {}) {
   const selection = opts.fields ?? { all: true, include: new Set<string>(), exclude: new Set<string>() };
   const expand = new Set(opts.expand ?? []);
-  const values = issueFieldValues(r, issue);
   const fields: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(values)) {
+  for (const [key, get] of Object.entries(issueFieldGetters(r, issue))) {
     if (selection.exclude.has(key)) continue;
-    if (selection.all || selection.include.has(key)) fields[key] = value;
+    if (selection.all || selection.include.has(key)) fields[key] = get();
   }
 
   const result: Record<string, unknown> = {

@@ -465,6 +465,7 @@ const SYSTEM_JQL: Record<string, FieldHandler & { aliases?: string[] }> = {
       (ctx) => ctx.js.priorities.all(),
       (p) => [p.name],
     ),
+    // Priorities are only seeded, in order from Highest to Lowest, so a lower id is more urgent.
     sort: (issue) => (issue.priority_id ? -issue.priority_id : null),
   },
   issuetype: {
@@ -893,6 +894,22 @@ function sortIssues(issues: JiraIssue[], orderBy: OrderBy[], ctx: EvalContext): 
     return order[0].direction === "DESC" ? b.issue.id - a.issue.id : a.issue.id - b.issue.id;
   });
   return keyed.map((entry) => entry.issue);
+}
+
+/**
+ * Compiles JQL into a predicate for testing single issues, such as webhook filters. Unknown fields and values
+ * (including ORDER BY fields) throw JqlError up front. ORDER BY itself is ignored.
+ */
+export function compileJql(
+  js: JiraStore,
+  jql: string,
+  user: JiraUser,
+  now = new Date(),
+): (issue: JiraIssue) => boolean {
+  const query = parseJql(jql);
+  const ctx: EvalContext = { js, user, now };
+  for (const entry of query.orderBy) sortHandler(js, entry.field);
+  return query.where ? compile(query.where, ctx) : () => true;
 }
 
 /** Runs a JQL query against the store. Throws JqlError for invalid queries. */

@@ -19,6 +19,19 @@ describe("Jira issues", () => {
   });
 
   describe("reading", () => {
+    it("finds issues and projects by key in any case", async () => {
+      expect((await api(t.app, "/rest/api/3/issue/emu-1")).json.key).toBe("EMU-1");
+      expect((await api(t.app, "/rest/api/3/project/emu")).json.key).toBe("EMU");
+    });
+
+    it("returns only the requested fields", async () => {
+      const res = await api(t.app, "/rest/api/3/issue/EMU-1?fields=summary,status");
+      expect(Object.keys(res.json.fields).sort()).toEqual(["status", "summary"]);
+      const excluded = await api(t.app, "/rest/api/3/issue/EMU-1?fields=*all,-comment");
+      expect(excluded.json.fields.comment).toBeUndefined();
+      expect(excluded.json.fields.summary).toBe("Ship Jira emulator");
+    });
+
     it("returns the seeded issue with Jira shaped fields", async () => {
       const res = await api(t.app, "/rest/api/3/issue/EMU-1");
       expect(res.status).toBe(200);

@@ -1,14 +1,25 @@
+import type { Collection, Entity } from "@emulators/core";
 import type { JiraStore } from "./store.js";
 import { JiraError, issueNotFound, type PageParams } from "./context.js";
 
 const eqi = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const asId = (ref: string | number) => (/^\d+$/.test(String(ref)) ? Number(ref) : undefined);
 
-export function findProject(js: JiraStore, ref: string | number | undefined | null) {
+type Ref = string | number | undefined | null;
+
+/** Looks an entity up by numeric id, or else by a case-insensitive name. */
+function findByIdOrName<T extends Entity>(collection: Collection<T>, ref: Ref, names: (item: T) => string[]) {
   if (ref === undefined || ref === null || ref === "") return undefined;
   const id = asId(ref);
-  if (id !== undefined) return js.projects.get(id);
-  return js.projects.all().find((project) => eqi(project.key, String(ref)));
+  if (id !== undefined) return collection.get(id);
+  return collection.all().find((item) => names(item).some((name) => eqi(name, String(ref))));
+}
+
+/** Project keys are stored uppercase, so key lookups use the index. */
+export function findProject(js: JiraStore, ref: Ref) {
+  if (ref === undefined || ref === null || ref === "") return undefined;
+  const id = asId(ref);
+  return id !== undefined ? js.projects.get(id) : js.projects.findOneBy("key", String(ref).toUpperCase());
 }
 
 export function requireProject(js: JiraStore, ref: string) {
@@ -17,11 +28,11 @@ export function requireProject(js: JiraStore, ref: string) {
   return project;
 }
 
-export function findIssue(js: JiraStore, ref: string | number | undefined | null) {
+/** Issue keys inherit the uppercase project key, so key lookups use the index. */
+export function findIssue(js: JiraStore, ref: Ref) {
   if (ref === undefined || ref === null || ref === "") return undefined;
   const id = asId(ref);
-  if (id !== undefined) return js.issues.get(id);
-  return js.issues.all().find((issue) => eqi(issue.key, String(ref)));
+  return id !== undefined ? js.issues.get(id) : js.issues.findOneBy("key", String(ref).toUpperCase());
 }
 
 export function requireIssue(js: JiraStore, ref: string) {
@@ -38,33 +49,12 @@ export function findUser(js: JiraStore, ref: string | undefined | null) {
   );
 }
 
-export function findIssueType(js: JiraStore, ref: string | number | undefined | null) {
-  if (ref === undefined || ref === null || ref === "") return undefined;
-  const id = asId(ref);
-  if (id !== undefined) return js.issueTypes.get(id);
-  return js.issueTypes.all().find((type) => eqi(type.name, String(ref)));
-}
-
-export function findStatus(js: JiraStore, ref: string | number | undefined | null) {
-  if (ref === undefined || ref === null || ref === "") return undefined;
-  const id = asId(ref);
-  if (id !== undefined) return js.statuses.get(id);
-  return js.statuses.all().find((status) => eqi(status.name, String(ref)));
-}
-
-export function findPriority(js: JiraStore, ref: string | number | undefined | null) {
-  if (ref === undefined || ref === null || ref === "") return undefined;
-  const id = asId(ref);
-  if (id !== undefined) return js.priorities.get(id);
-  return js.priorities.all().find((priority) => eqi(priority.name, String(ref)));
-}
-
-export function findResolution(js: JiraStore, ref: string | number | undefined | null) {
-  if (ref === undefined || ref === null || ref === "") return undefined;
-  const id = asId(ref);
-  if (id !== undefined) return js.resolutions.get(id);
-  return js.resolutions.all().find((resolution) => eqi(resolution.name, String(ref)));
-}
+export const findIssueType = (js: JiraStore, ref: Ref) => findByIdOrName(js.issueTypes, ref, (type) => [type.name]);
+export const findStatus = (js: JiraStore, ref: Ref) => findByIdOrName(js.statuses, ref, (status) => [status.name]);
+export const findPriority = (js: JiraStore, ref: Ref) =>
+  findByIdOrName(js.priorities, ref, (priority) => [priority.name]);
+export const findResolution = (js: JiraStore, ref: Ref) =>
+  findByIdOrName(js.resolutions, ref, (resolution) => [resolution.name]);
 
 export function findComponent(js: JiraStore, projectId: number, ref: { id?: string | number; name?: string }) {
   const components = js.components.findBy("project_id", projectId);

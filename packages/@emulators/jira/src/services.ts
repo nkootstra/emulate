@@ -30,7 +30,7 @@ export function createProject(js: JiraStore, input: CreateProjectInput): JiraPro
       .map((name) => items.find((item) => item.name.toLowerCase() === name.toLowerCase())?.id)
       .filter((id): id is number => id !== undefined);
   const project = insertFrom(js.projects, 10000, {
-    key: input.key,
+    key: input.key.toUpperCase(),
     name: input.name,
     description: input.description ?? "",
     lead_account_id: input.lead ?? null,

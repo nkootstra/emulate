@@ -3,7 +3,7 @@ import { JiraError, listParam, makeHandler, pageParams, READ, readJson, WRITE, t
 import { avatarUrls, formatStatus, projectStatuses } from "../formatters.js";
 import { formatIssue, formatSprint, parseFieldSelection } from "../issue-format.js";
 import { editIssue } from "../issue-service.js";
-import { JqlError, searchIssues } from "../jql.js";
+import { compileJql, JqlError } from "../jql.js";
 import { findIssue, findProject, paginate, requireIssue } from "../lookup.js";
 import { emitEditEvents } from "../webhooks.js";
 import { deleteBoardRecord, deleteSprintRecord } from "../services.js";
@@ -62,8 +62,7 @@ export function agileRoutes({ app, store, baseUrl }: RouteContext): void {
     const jql = r.c.req.query("jql");
     if (jql) {
       try {
-        const allowed = new Set(searchIssues(r.js, jql, r.user).map((issue) => issue.id));
-        issues = issues.filter((issue) => allowed.has(issue.id));
+        issues = issues.filter(compileJql(r.js, jql, r.user));
       } catch (err) {
         if (err instanceof JqlError) throw new JiraError(400, [err.message]);
         throw err;

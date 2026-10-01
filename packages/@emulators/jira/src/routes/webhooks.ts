@@ -1,7 +1,7 @@
 import type { RouteContext } from "@emulators/core";
 import { API_V, JiraError, makeHandler, pageParams, readJson, type JiraRequest } from "../context.js";
 import { jiraTime } from "../ids.js";
-import { JqlError, parseJql, searchIssues } from "../jql.js";
+import { compileJql, JqlError } from "../jql.js";
 import { paginate } from "../lookup.js";
 import { insertFrom } from "../store.js";
 import { WEBHOOK_EVENTS } from "../webhooks.js";
@@ -11,12 +11,11 @@ const W = "/rest/webhooks/1.0/webhook";
 const DYNAMIC_TTL_MS = 30 * 24 * 3600 * 1000;
 const FILTER_KEY = "issue-related-events-section";
 
-/** Returns an error message for an invalid JQL filter, or null. Evaluating it catches unknown values too. */
+/** Returns an error message for an invalid JQL filter, or null. Compiling it catches unknown values too. */
 function jqlProblem(r: JiraRequest, jql: string | null): string | null {
   if (!jql?.trim()) return null;
   try {
-    parseJql(jql);
-    searchIssues(r.js, jql, r.user);
+    compileJql(r.js, jql, r.user);
     return null;
   } catch (err) {
     if (err instanceof JqlError) return err.message;

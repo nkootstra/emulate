@@ -3,7 +3,7 @@ import type { JiraChangelog, JiraComment, JiraIssue, JiraWebhook } from "./entit
 import type { Actor, EditIssueResult } from "./issue-service.js";
 import { formatUser, type Fmt } from "./formatters.js";
 import { formatComment, formatIssue, formatIssueRef } from "./issue-format.js";
-import { JqlError, searchIssues } from "./jql.js";
+import { compileJql, JqlError } from "./jql.js";
 import { insertFrom } from "./store.js";
 
 export type JiraIssueEvent = "jira:issue_created" | "jira:issue_updated" | "jira:issue_deleted";
@@ -41,8 +41,7 @@ function issueEventType(event: JiraIssueEvent, opts: IssueEventOptions): string 
 function matchesFilter(actor: Actor, webhook: JiraWebhook, issue: JiraIssue): boolean {
   if (!webhook.jql_filter?.trim()) return true;
   try {
-    const ids = new Set(searchIssues(actor.js, webhook.jql_filter, actor.user).map((match) => match.id));
-    return ids.has(issue.id);
+    return compileJql(actor.js, webhook.jql_filter, actor.user)(issue);
   } catch (err) {
     if (err instanceof JqlError) return false;
     throw err;

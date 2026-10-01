@@ -191,7 +191,7 @@ export function ensureStatus(store: Store, name: string, category: JiraStatusCat
 
 export function ensureProject(store: Store, input: CreateProjectInput) {
   const js = getJiraStore(store);
-  return js.projects.findOneBy("key", input.key) ?? createProject(js, input);
+  return js.projects.findOneBy("key", input.key.toUpperCase()) ?? createProject(js, input);
 }
 
 export interface JiraSeedConfig {
