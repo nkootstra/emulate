@@ -1225,7 +1225,7 @@ JIRA_EMAIL=admin@jira.local
 JIRA_API_TOKEN=jira_test_token
 ```
 
-The default seed also creates `dev@jira.local` / `jira_dev_token`, project `EMU` with board `1`, active sprint `1`, and issue `EMU-1`.
+The default seed also creates `dev@jira.local` / `jira_dev_token`, project `EMU` with board `1`, active sprint `1`, and issue `EMU-1`. Project and webhook changes require an admin; components and versions also accept the project lead.
 
 ### Issues
 

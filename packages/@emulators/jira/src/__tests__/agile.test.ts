@@ -77,6 +77,11 @@ describe("Jira Agile API", () => {
     const issue = (await api(t.app, "/rest/api/3/issue/EMU-2")).json;
     expect(issue.fields.customfield_10020[0].name).toBe("Sprint 2");
 
+    const longName = await api(t.app, `${A}/sprint/${id}`, { method: "POST", body: { name: "x".repeat(31) } });
+    expect(longName.status).toBe(400);
+    const badDate = await api(t.app, `${A}/sprint/${id}`, { method: "POST", body: { startDate: "soon" } });
+    expect(badDate.status).toBe(400);
+
     const startWithoutDates = await api(t.app, `${A}/sprint/${id}`, { method: "POST", body: { state: "active" } });
     expect(startWithoutDates.status).toBe(400);
 

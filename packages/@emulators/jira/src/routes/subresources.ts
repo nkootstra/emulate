@@ -11,29 +11,13 @@ import {
   type JiraRequest,
 } from "../context.js";
 import { formatUser, restUrl } from "../formatters.js";
-import { formatComment, formatIssueRef, formatWorklog } from "../issue-format.js";
+import { formatComment, formatIssueRef, formatWorklog, parseDuration } from "../issue-format.js";
 import { addComment, createLink, findLinkType, readBody } from "../issue-service.js";
 import { findIssue, findUser, requireIssue } from "../lookup.js";
 import { insertFrom } from "../store.js";
 import { touchIssue } from "../services.js";
 import { emitCommentEvent, emitIssueEvent } from "../webhooks.js";
 import type { JiraComment, JiraIssue, JiraWorklog } from "../entities.js";
-
-const DURATION_UNITS: Record<string, number> = { w: 5 * 8 * 3600, d: 8 * 3600, h: 3600, m: 60 };
-
-/** Parses Jira durations such as `1w 2d 3h 30m`. A bare number means minutes. */
-export function parseDuration(value: string): number | null {
-  const trimmed = value.trim();
-  if (/^\d+$/.test(trimmed)) return Number(trimmed) * 60;
-  const parts = trimmed.split(/\s+/);
-  let total = 0;
-  for (const part of parts) {
-    const match = /^(\d+(?:\.\d+)?)([wdhm])$/.exec(part);
-    if (!match) return null;
-    total += Number(match[1]) * DURATION_UNITS[match[2]];
-  }
-  return total > 0 ? Math.round(total) : null;
-}
 
 function timeSpentSeconds(body: { timeSpent?: unknown; timeSpentSeconds?: unknown }): number | undefined {
   if (typeof body.timeSpentSeconds === "number") {

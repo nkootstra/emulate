@@ -156,6 +156,47 @@ describe("Jira metadata", () => {
       const versions = await api(t.app, "/rest/api/3/project/EMU/versions");
       expect(versions.json.map((v: any) => v.name)).toEqual(["1.0.0"]);
     });
+
+    it("validates component and version changes", async () => {
+      const dev = basicAuth(DEFAULT_DEV_EMAIL, DEFAULT_DEV_API_TOKEN);
+      const denied = await api(t.app, "/rest/api/3/component", {
+        method: "POST",
+        body: { project: "EMU", name: "API" },
+        auth: dev,
+      });
+      expect(denied.status).toBe(403);
+
+      const api1 = await api(t.app, "/rest/api/3/component", { method: "POST", body: { project: "EMU", name: "API" } });
+      await api(t.app, "/rest/api/3/component", { method: "POST", body: { project: "EMU", name: "Web" } });
+      const clash = await api(t.app, `/rest/api/3/component/${api1.json.id}`, {
+        method: "PUT",
+        body: { name: "web" },
+      });
+      expect(clash.status).toBe(400);
+      expect(clash.json.errors.name).toMatch(/already exists/);
+      const deniedDelete = await api(t.app, `/rest/api/3/component/${api1.json.id}`, { method: "DELETE", auth: dev });
+      expect(deniedDelete.status).toBe(403);
+
+      const badDate = await api(t.app, "/rest/api/3/version", {
+        method: "POST",
+        body: { project: "EMU", name: "2.0.0", releaseDate: "next week" },
+      });
+      expect(badDate.status).toBe(400);
+      expect(badDate.json.errors.releaseDate).toBeTruthy();
+    });
+
+    it("lets the project lead manage components", async () => {
+      const store = getJiraStore(t.store);
+      const dev = store.users.findOneBy("email", DEFAULT_DEV_EMAIL)!;
+      const project = store.projects.findOneBy("key", "EMU")!;
+      store.projects.update(project.id, { lead_account_id: dev.account_id });
+      const created = await api(t.app, "/rest/api/3/component", {
+        method: "POST",
+        body: { project: "EMU", name: "API" },
+        auth: basicAuth(DEFAULT_DEV_EMAIL, DEFAULT_DEV_API_TOKEN),
+      });
+      expect(created.status).toBe(201);
+    });
   });
 
   describe("configuration", () => {

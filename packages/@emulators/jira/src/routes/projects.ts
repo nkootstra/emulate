@@ -18,6 +18,36 @@ import { createProject, deleteComponentRecord, deleteProjectRecord, deleteVersio
 
 const PROJECT_KEY = /^[A-Z][A-Z0-9_]{1,9}$/;
 
+/** Jira lets site admins and the project lead administer a project's components and versions. */
+function requireProjectAdmin(r: JiraRequest, projectId: number) {
+  const project = r.js.projects.get(projectId);
+  if (r.user.admin || (project && project.lead_account_id === r.user.account_id)) return;
+  throw new JiraError(403, ["You do not have permission to administer this project."]);
+}
+
+/** Rejects a component or version name already used by another item in the same project. */
+function requireUniqueName(
+  items: Array<{ id: number; name: string }>,
+  name: string,
+  error: () => JiraError,
+  exceptId?: number,
+) {
+  if (items.some((item) => item.id !== exceptId && item.name.toLowerCase() === name.toLowerCase())) throw error();
+}
+
+/** Reads an optional `yyyy-MM-dd` date from a request body. */
+function dateField(field: string, value: unknown): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(value))) {
+    throw fieldError(field, `Invalid date format. Please enter the date in the format "yyyy-MM-dd".`);
+  }
+  return value;
+}
+
+const componentExists = (name: string) =>
+  fieldError("name", `A component with the name ${name} already exists in this project.`);
+const versionExists = () => fieldError("name", "A version with this name already exists in this project.");
+
 function requireAdmin(r: JiraRequest) {
   if (!r.user.admin) {
     throw new JiraError(403, ["You must have global administrator rights in order to modify projects."]);
@@ -191,11 +221,10 @@ export function projectRoutes({ app, store, baseUrl }: RouteContext): void {
         const body = await readJson(r.c);
         const project = findProject(r.js, body.projectId ?? body.project);
         if (!project) throw fieldError("project", "The project with key or id specified does not exist.");
+        requireProjectAdmin(r, project.id);
         const name = String(body.name ?? "").trim();
         if (!name) throw fieldError("name", "The component name must not be empty.");
-        if (r.js.components.findBy("project_id", project.id).some((c) => c.name.toLowerCase() === name.toLowerCase())) {
-          throw fieldError("name", `A component with the name ${name} already exists in this project.`);
-        }
+        requireUniqueName(r.js.components.findBy("project_id", project.id), name, () => componentExists(name));
         const lead = body.leadAccountId ? findUser(r.js, String(body.leadAccountId)) : undefined;
         const component = insertFrom(r.js.components, 10000, {
           project_id: project.id,
@@ -225,9 +254,16 @@ export function projectRoutes({ app, store, baseUrl }: RouteContext): void {
     handle(
       async (r) => {
         const component = requireComponent(r);
+        requireProjectAdmin(r, component.project_id);
         const body = await readJson(r.c);
+        const name = typeof body.name === "string" ? body.name.trim() : undefined;
+        if (name !== undefined) {
+          if (!name) throw fieldError("name", "The component name must not be empty.");
+          const siblings = r.js.components.findBy("project_id", component.project_id);
+          requireUniqueName(siblings, name, () => componentExists(name), component.id);
+        }
         const updated = r.js.components.update(component.id, {
-          ...(typeof body.name === "string" ? { name: body.name } : {}),
+          ...(name !== undefined ? { name } : {}),
           ...(typeof body.description === "string" ? { description: body.description } : {}),
         })!;
         return r.c.json(formatComponent(r, updated));
@@ -240,7 +276,9 @@ export function projectRoutes({ app, store, baseUrl }: RouteContext): void {
     `${API_V}/component/:id`,
     handle(
       (r) => {
-        deleteComponentRecord(r.js, requireComponent(r));
+        const component = requireComponent(r);
+        requireProjectAdmin(r, component.project_id);
+        deleteComponentRecord(r.js, component);
         return r.c.body(null, 204);
       },
       { scopes: MANAGE },
@@ -254,19 +292,18 @@ export function projectRoutes({ app, store, baseUrl }: RouteContext): void {
         const body = await readJson(r.c);
         const project = findProject(r.js, body.projectId ?? body.project);
         if (!project) throw fieldError("project", "The project with key or id specified does not exist.");
+        requireProjectAdmin(r, project.id);
         const name = String(body.name ?? "").trim();
         if (!name) throw fieldError("name", "You must specify a valid version name");
-        if (r.js.versions.findBy("project_id", project.id).some((v) => v.name.toLowerCase() === name.toLowerCase())) {
-          throw fieldError("name", "A version with this name already exists in this project.");
-        }
+        requireUniqueName(r.js.versions.findBy("project_id", project.id), name, versionExists);
         const version = insertFrom(r.js.versions, 10000, {
           project_id: project.id,
           name,
           description: body.description ?? "",
           released: body.released === true,
           archived: body.archived === true,
-          start_date: body.startDate ?? null,
-          release_date: body.releaseDate ?? null,
+          start_date: dateField("startDate", body.startDate),
+          release_date: dateField("releaseDate", body.releaseDate),
         });
         return r.c.json(formatVersion(r, version), 201);
       },
@@ -290,14 +327,20 @@ export function projectRoutes({ app, store, baseUrl }: RouteContext): void {
     handle(
       async (r) => {
         const version = requireVersion(r);
+        requireProjectAdmin(r, version.project_id);
         const body = await readJson(r.c);
+        const name = typeof body.name === "string" ? body.name.trim() : undefined;
+        if (name !== undefined) {
+          if (!name) throw fieldError("name", "You must specify a valid version name");
+          requireUniqueName(r.js.versions.findBy("project_id", version.project_id), name, versionExists, version.id);
+        }
         const updated = r.js.versions.update(version.id, {
-          ...(typeof body.name === "string" ? { name: body.name } : {}),
+          ...(name !== undefined ? { name } : {}),
           ...(typeof body.description === "string" ? { description: body.description } : {}),
           ...(typeof body.released === "boolean" ? { released: body.released } : {}),
           ...(typeof body.archived === "boolean" ? { archived: body.archived } : {}),
-          ...(body.startDate !== undefined ? { start_date: body.startDate } : {}),
-          ...(body.releaseDate !== undefined ? { release_date: body.releaseDate } : {}),
+          ...(body.startDate !== undefined ? { start_date: dateField("startDate", body.startDate) } : {}),
+          ...(body.releaseDate !== undefined ? { release_date: dateField("releaseDate", body.releaseDate) } : {}),
         })!;
         return r.c.json(formatVersion(r, updated));
       },
@@ -309,7 +352,9 @@ export function projectRoutes({ app, store, baseUrl }: RouteContext): void {
     `${API_V}/version/:id`,
     handle(
       (r) => {
-        deleteVersionRecord(r.js, requireVersion(r));
+        const version = requireVersion(r);
+        requireProjectAdmin(r, version.project_id);
+        deleteVersionRecord(r.js, version);
         return r.c.body(null, 204);
       },
       { scopes: MANAGE },

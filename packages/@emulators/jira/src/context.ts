@@ -42,22 +42,32 @@ export interface JiraRequest {
   clientId: string | null;
 }
 
+/** Request for an endpoint that also serves anonymous callers, so there may be no user. */
+export interface PublicJiraRequest extends Omit<JiraRequest, "user" | "scopes"> {
+  user: JiraUser | null;
+  scopes: string[] | null;
+}
+
 export interface HandlerOptions {
-  /** Defaults to true. When false, `user` falls back to the first admin. */
+  /** Defaults to true. When false, anonymous requests are allowed and the handler gets a `PublicJiraRequest`. */
   auth?: boolean;
   /** OAuth scopes required when strict scope checking is enabled. Any one of them is enough. */
   scopes?: string[];
 }
 
 type JiraHandler = (r: JiraRequest) => Response | Promise<Response>;
+type PublicJiraHandler = (r: PublicJiraRequest) => Response | Promise<Response>;
+type RouteHandler = (c: Context<AppEnv>) => Promise<Response>;
 
 export function jiraErrorResponse(c: Context<AppEnv>, err: JiraError): Response {
   return c.json({ errorMessages: err.errorMessages, errors: err.errors }, err.status);
 }
 
 export function makeHandler(store: Store, baseUrl: string) {
-  return (fn: JiraHandler, opts: HandlerOptions = {}) =>
-    async (c: Context<AppEnv>): Promise<Response> => {
+  function handle(fn: PublicJiraHandler, opts: HandlerOptions & { auth: false }): RouteHandler;
+  function handle(fn: JiraHandler, opts?: HandlerOptions): RouteHandler;
+  function handle(fn: JiraHandler | PublicJiraHandler, opts: HandlerOptions = {}) {
+    return async (c: Context<AppEnv>): Promise<Response> => {
       try {
         const js = getJiraStore(store);
         const version = c.req.param("v") === "2" ? "2" : "3";
@@ -81,13 +91,17 @@ export function makeHandler(store: Store, baseUrl: string) {
             ]);
           }
         }
-        user ??= js.users.all().find((u) => u.admin) ?? js.users.all()[0];
-        return await fn({ c, store, js, version, siteUrl, baseUrl, user: user!, scopes, clientId });
+        const request = { c, store, js, version, siteUrl, baseUrl, scopes, clientId } as const;
+        if (opts.auth === false) return await (fn as PublicJiraHandler)({ ...request, user: user ?? null });
+        // Authenticated routes threw above when there was no user.
+        return await (fn as JiraHandler)({ ...request, user: user! });
       } catch (err) {
         if (err instanceof JiraError) return jiraErrorResponse(c, err);
         throw err;
       }
     };
+  }
+  return handle;
 }
 
 interface AuthResult {

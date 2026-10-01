@@ -38,7 +38,7 @@ Use HTTP Basic auth with a seeded user's email and API token, exactly like Jira 
 curl -u admin@jira.local:jira_test_token "$JIRA_EMULATOR_URL/rest/api/3/myself"
 ```
 
-Default credentials: `admin@jira.local` / `jira_test_token` (admin) and `dev@jira.local` / `jira_dev_token`. API tokens also work as `Authorization: Bearer <token>`. Wrong credentials return `401` with `{"errorMessages":["Client must be authenticated to access this resource."],"errors":{}}`.
+Default credentials: `admin@jira.local` / `jira_test_token` (admin) and `dev@jira.local` / `jira_dev_token`. API tokens also work as `Authorization: Bearer <token>`. Wrong credentials return `401` with `{"errorMessages":["Client must be authenticated to access this resource."],"errors":{}}`. Creating, editing, or deleting projects and webhooks requires an admin; components and versions also accept the project lead.
 
 OAuth scope checks are relaxed by default. Set `jira.strict_scopes: true` to require granular scopes such as `read:jira-work` and `write:jira-work` for OAuth access tokens.
 

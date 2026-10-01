@@ -498,160 +498,131 @@ export function transitionIssue(
   });
 }
 
-function joinNames<T>(ids: T[], lookup: (id: T) => string | undefined): string | null {
-  const names = ids.map(lookup).filter(Boolean);
-  return names.length > 0 ? names.join(" ") : null;
+/** A field recorded in the changelog when an edit changes it. */
+interface TrackedField {
+  field: string;
+  fieldId: string;
+  fieldtype?: "jira" | "custom";
+  /** Raw value reported as `from` and `to`. */
+  id?: (issue: JiraIssue) => string | null;
+  /** Display value reported as `fromString` and `toString`. */
+  text: (issue: JiraIssue) => string | null;
+  /** Decides whether the field changed. Defaults to comparing `id` and `text`. */
+  compare?: (issue: JiraIssue) => string;
+}
+
+function trackedFields(js: JiraStore): TrackedField[] {
+  const str = (value: number | null) => (value === null ? null : String(value));
+  const named =
+    (get: (id: number) => { name: string } | undefined) =>
+    (id: number | null): string | null =>
+      id === null ? null : (get(id)?.name ?? null);
+  const names = (ids: number[], get: (id: number) => { name: string } | undefined) =>
+    ids
+      .map((id) => get(id)?.name)
+      .filter(Boolean)
+      .join(" ") || null;
+  const user = (id: string | null) => (id ? (js.users.findOneBy("account_id", id)?.display_name ?? id) : null);
+  const adf = (key: "description" | "environment"): TrackedField => ({
+    field: key,
+    fieldId: key,
+    text: (issue) => (issue[key] ? adfToText(issue[key]) : null),
+    compare: (issue) => JSON.stringify(issue[key]),
+  });
+  const issueType = named((id) => js.issueTypes.get(id));
+  const status = named((id) => js.statuses.get(id));
+  const priority = named((id) => js.priorities.get(id));
+  const resolution = named((id) => js.resolutions.get(id));
+  const sprint = named((id) => js.sprints.get(id));
+  const sprintField = js.customFields.all().find((field) => field.type === "sprint");
+
+  const system: TrackedField[] = [
+    { field: "summary", fieldId: "summary", text: (issue) => issue.summary },
+    adf("description"),
+    adf("environment"),
+    {
+      field: "issuetype",
+      fieldId: "issuetype",
+      id: (i) => str(i.issue_type_id),
+      text: (i) => issueType(i.issue_type_id),
+    },
+    { field: "status", fieldId: "status", id: (i) => str(i.status_id), text: (i) => status(i.status_id) },
+    { field: "priority", fieldId: "priority", id: (i) => str(i.priority_id), text: (i) => priority(i.priority_id) },
+    {
+      field: "resolution",
+      fieldId: "resolution",
+      id: (i) => str(i.resolution_id),
+      text: (i) => resolution(i.resolution_id),
+    },
+    { field: "assignee", fieldId: "assignee", id: (i) => i.assignee_id, text: (i) => user(i.assignee_id) },
+    { field: "reporter", fieldId: "reporter", id: (i) => i.reporter_id, text: (i) => user(i.reporter_id) },
+    { field: "duedate", fieldId: "duedate", id: (i) => i.due_date, text: (i) => i.due_date },
+    { field: "labels", fieldId: "labels", text: (i) => i.labels.join(" ") || null },
+    {
+      field: "IssueParentAssociation",
+      fieldId: "parent",
+      id: (i) => str(i.parent_id),
+      text: (i) => (i.parent_id ? (js.issues.get(i.parent_id)?.key ?? null) : null),
+    },
+    {
+      field: "Component",
+      fieldId: "components",
+      id: (i) => i.component_ids.join(",") || null,
+      text: (i) => names(i.component_ids, (id) => js.components.get(id)),
+    },
+    {
+      field: "Fix Version",
+      fieldId: "fixVersions",
+      id: (i) => i.fix_version_ids.join(",") || null,
+      text: (i) => names(i.fix_version_ids, (id) => js.versions.get(id)),
+    },
+    {
+      field: sprintField?.name ?? "Sprint",
+      fieldId: sprintField?.field_id ?? "customfield_10020",
+      fieldtype: "custom",
+      id: (i) => str(i.sprint_id),
+      text: (i) => sprint(i.sprint_id),
+    },
+  ];
+
+  const custom = js.customFields
+    .all()
+    .filter((field) => field.type !== "sprint")
+    .map((field): TrackedField => {
+      const value = (issue: JiraIssue) => issue.custom_fields[field.field_id] ?? null;
+      return {
+        field: field.name,
+        fieldId: field.field_id,
+        fieldtype: "custom",
+        text: (issue) => {
+          const current = value(issue);
+          if (current === null) return null;
+          if (field.type === "user") return user(String(current));
+          return Array.isArray(current) ? current.join(" ") : String(current);
+        },
+        compare: (issue) => JSON.stringify(value(issue)),
+      };
+    });
+
+  return [...system, ...custom];
 }
 
 /** Builds Jira style changelog items for every tracked field that differs between two issue states. */
 export function diffIssues(js: JiraStore, before: JiraIssue, after: JiraIssue): JiraChangelogItem[] {
   const items: JiraChangelogItem[] = [];
-  const push = (
-    field: string,
-    fieldId: string,
-    from: string | null,
-    fromString: string | null,
-    to: string | null,
-    toString: string | null,
-    fieldtype: "jira" | "custom" = "jira",
-  ) => {
-    if (from === to && fromString === toString) return;
-    items.push({ field, fieldtype, fieldId, from, fromString, to, toString });
-  };
-  const str = (value: number | null) => (value === null ? null : String(value));
-  const user = (id: string | null) => (id ? (js.users.findOneBy("account_id", id)?.display_name ?? id) : null);
-
-  push("summary", "summary", null, before.summary, null, after.summary);
-  const beforeDescription = before.description ? adfToText(before.description) : null;
-  const afterDescription = after.description ? adfToText(after.description) : null;
-  if (JSON.stringify(before.description) !== JSON.stringify(after.description)) {
+  for (const tracked of trackedFields(js)) {
+    const compare =
+      tracked.compare ?? ((issue: JiraIssue) => JSON.stringify([tracked.id?.(issue), tracked.text(issue)]));
+    if (compare(before) === compare(after)) continue;
     items.push({
-      field: "description",
-      fieldtype: "jira",
-      fieldId: "description",
-      from: null,
-      fromString: beforeDescription,
-      to: null,
-      toString: afterDescription,
+      field: tracked.field,
+      fieldtype: tracked.fieldtype ?? "jira",
+      fieldId: tracked.fieldId,
+      from: tracked.id?.(before) ?? null,
+      fromString: tracked.text(before),
+      to: tracked.id?.(after) ?? null,
+      toString: tracked.text(after),
     });
-  }
-  if (JSON.stringify(before.environment) !== JSON.stringify(after.environment)) {
-    items.push({
-      field: "environment",
-      fieldtype: "jira",
-      fieldId: "environment",
-      from: null,
-      fromString: before.environment ? adfToText(before.environment) : null,
-      to: null,
-      toString: after.environment ? adfToText(after.environment) : null,
-    });
-  }
-  push(
-    "issuetype",
-    "issuetype",
-    str(before.issue_type_id),
-    js.issueTypes.get(before.issue_type_id)?.name ?? null,
-    str(after.issue_type_id),
-    js.issueTypes.get(after.issue_type_id)?.name ?? null,
-  );
-  push(
-    "status",
-    "status",
-    str(before.status_id),
-    js.statuses.get(before.status_id)?.name ?? null,
-    str(after.status_id),
-    js.statuses.get(after.status_id)?.name ?? null,
-  );
-  push(
-    "priority",
-    "priority",
-    str(before.priority_id),
-    before.priority_id ? (js.priorities.get(before.priority_id)?.name ?? null) : null,
-    str(after.priority_id),
-    after.priority_id ? (js.priorities.get(after.priority_id)?.name ?? null) : null,
-  );
-  push(
-    "resolution",
-    "resolution",
-    str(before.resolution_id),
-    before.resolution_id ? (js.resolutions.get(before.resolution_id)?.name ?? null) : null,
-    str(after.resolution_id),
-    after.resolution_id ? (js.resolutions.get(after.resolution_id)?.name ?? null) : null,
-  );
-  push(
-    "assignee",
-    "assignee",
-    before.assignee_id,
-    user(before.assignee_id),
-    after.assignee_id,
-    user(after.assignee_id),
-  );
-  push(
-    "reporter",
-    "reporter",
-    before.reporter_id,
-    user(before.reporter_id),
-    after.reporter_id,
-    user(after.reporter_id),
-  );
-  push("duedate", "duedate", before.due_date, before.due_date, after.due_date, after.due_date);
-  if (before.labels.join(" ") !== after.labels.join(" ")) {
-    push("labels", "labels", null, before.labels.join(" ") || null, null, after.labels.join(" ") || null);
-  }
-  push(
-    "IssueParentAssociation",
-    "parent",
-    str(before.parent_id),
-    before.parent_id ? (js.issues.get(before.parent_id)?.key ?? null) : null,
-    str(after.parent_id),
-    after.parent_id ? (js.issues.get(after.parent_id)?.key ?? null) : null,
-  );
-  if (before.component_ids.join(",") !== after.component_ids.join(",")) {
-    push(
-      "Component",
-      "components",
-      before.component_ids.join(",") || null,
-      joinNames(before.component_ids, (id) => js.components.get(id)?.name),
-      after.component_ids.join(",") || null,
-      joinNames(after.component_ids, (id) => js.components.get(id)?.name),
-    );
-  }
-  if (before.fix_version_ids.join(",") !== after.fix_version_ids.join(",")) {
-    push(
-      "Fix Version",
-      "fixVersions",
-      before.fix_version_ids.join(",") || null,
-      joinNames(before.fix_version_ids, (id) => js.versions.get(id)?.name),
-      after.fix_version_ids.join(",") || null,
-      joinNames(after.fix_version_ids, (id) => js.versions.get(id)?.name),
-    );
-  }
-  if (before.sprint_id !== after.sprint_id) {
-    const sprintField = js.customFields.all().find((field) => field.type === "sprint");
-    push(
-      sprintField?.name ?? "Sprint",
-      sprintField?.field_id ?? "customfield_10020",
-      str(before.sprint_id),
-      before.sprint_id ? (js.sprints.get(before.sprint_id)?.name ?? null) : null,
-      str(after.sprint_id),
-      after.sprint_id ? (js.sprints.get(after.sprint_id)?.name ?? null) : null,
-      "custom",
-    );
-  }
-  for (const field of js.customFields.all()) {
-    if (field.type === "sprint") continue;
-    const from = before.custom_fields[field.field_id] ?? null;
-    const to = after.custom_fields[field.field_id] ?? null;
-    if (JSON.stringify(from) === JSON.stringify(to)) continue;
-    const text = (value: unknown) =>
-      value === null
-        ? null
-        : field.type === "user"
-          ? user(String(value))
-          : Array.isArray(value)
-            ? value.join(" ")
-            : String(value);
-    push(field.name, field.field_id, null, text(from), null, text(to), "custom");
   }
   return items;
 }

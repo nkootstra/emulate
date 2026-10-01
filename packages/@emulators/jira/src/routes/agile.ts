@@ -12,6 +12,21 @@ import type { JiraBoard, JiraIssue, JiraSprint, JiraSprintState } from "../entit
 const A = "/rest/agile/1.0";
 const PREFIXES = [A, "/rest/software/1.0"];
 
+function sprintName(value: unknown): string {
+  const name = String(value ?? "").trim();
+  if (!name) throw new JiraError(400, [], { name: "Sprint name is required." });
+  if (name.length > 30) throw new JiraError(400, [], { name: "Sprint name must be 30 characters or fewer." });
+  return name;
+}
+
+/** Reads an optional sprint date (an ISO 8601 date-time) and stores it normalized. */
+function sprintDate(field: string, value: unknown): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  const time = typeof value === "string" ? Date.parse(value) : Number.NaN;
+  if (Number.isNaN(time)) throw new JiraError(400, [], { [field]: `Invalid date '${String(value)}'.` });
+  return new Date(time).toISOString();
+}
+
 export function agileRoutes({ app, store, baseUrl }: RouteContext): void {
   const handle = makeHandler(store, baseUrl);
 
@@ -263,9 +278,7 @@ export function agileRoutes({ app, store, baseUrl }: RouteContext): void {
       handle(
         async (r) => {
           const body = await readJson(r.c);
-          const name = String(body.name ?? "").trim();
-          if (!name) throw new JiraError(400, [], { name: "Sprint name is required." });
-          if (name.length > 30) throw new JiraError(400, [], { name: "Sprint name must be 30 characters or fewer." });
+          const name = sprintName(body.name);
           const board = r.js.boards.get(Number(body.originBoardId));
           if (!board)
             throw new JiraError(400, [], {
@@ -277,8 +290,8 @@ export function agileRoutes({ app, store, baseUrl }: RouteContext): void {
             name,
             state: "future",
             goal: body.goal ?? "",
-            start_date: body.startDate ?? null,
-            end_date: body.endDate ?? null,
+            start_date: sprintDate("startDate", body.startDate),
+            end_date: sprintDate("endDate", body.endDate),
             complete_date: null,
           });
           return r.c.json(formatSprint(r, sprint), 201);
@@ -299,10 +312,10 @@ export function agileRoutes({ app, store, baseUrl }: RouteContext): void {
           const body = await readJson(r.c);
           const next: JiraSprint = {
             ...sprint,
-            name: typeof body.name === "string" ? body.name : sprint.name,
+            name: body.name !== undefined ? sprintName(body.name) : sprint.name,
             goal: typeof body.goal === "string" ? body.goal : sprint.goal,
-            start_date: body.startDate !== undefined ? body.startDate : sprint.start_date,
-            end_date: body.endDate !== undefined ? body.endDate : sprint.end_date,
+            start_date: body.startDate !== undefined ? sprintDate("startDate", body.startDate) : sprint.start_date,
+            end_date: body.endDate !== undefined ? sprintDate("endDate", body.endDate) : sprint.end_date,
           };
           const target = (body.state ?? sprint.state) as JiraSprintState;
           if (target !== sprint.state) {

@@ -102,16 +102,14 @@ export function formatChangelog(r: Fmt, entry: JiraChangelog) {
   };
 }
 
+/** Jira's default time tracking units, largest first: a week is 5 days and a day is 8 hours. */
+const DURATION_UNITS = { w: 5 * 8 * 3600, d: 8 * 3600, h: 3600, m: 60 };
+
+/** Formats seconds as Jira does, such as `1w 2d 3h 30m`. */
 export function formatDuration(seconds: number): string {
-  const units: Array<[string, number]> = [
-    ["w", 5 * 8 * 3600],
-    ["d", 8 * 3600],
-    ["h", 3600],
-    ["m", 60],
-  ];
   const parts: string[] = [];
   let remaining = seconds;
-  for (const [unit, size] of units) {
+  for (const [unit, size] of Object.entries(DURATION_UNITS)) {
     const count = Math.floor(remaining / size);
     if (count > 0) {
       parts.push(`${count}${unit}`);
@@ -119,6 +117,20 @@ export function formatDuration(seconds: number): string {
     }
   }
   return parts.join(" ") || "0m";
+}
+
+/** Parses Jira durations such as `1w 2d 3h 30m`. A bare number means minutes. */
+export function parseDuration(value: string): number | null {
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed) * 60;
+  const parts = trimmed.split(/\s+/);
+  let total = 0;
+  for (const part of parts) {
+    const match = /^(\d+(?:\.\d+)?)([wdhm])$/.exec(part);
+    if (!match) return null;
+    total += Number(match[1]) * DURATION_UNITS[match[2] as keyof typeof DURATION_UNITS];
+  }
+  return total > 0 ? Math.round(total) : null;
 }
 
 /** Transition IDs are derived from the status position in the project workflow (11, 21, 31, ...). */
